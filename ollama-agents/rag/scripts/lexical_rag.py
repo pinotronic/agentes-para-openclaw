@@ -46,6 +46,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--q", required=True)
     ap.add_argument("--k", type=int, default=6)
+    ap.add_argument("--format", choices=["md", "toon"], default="md")
     ap.add_argument("--max-files", type=int, default=400, help="limit scanned files (0 = no limit)")
     ap.add_argument("--max-chunks", type=int, default=1200, help="limit scanned chunks (0 = no limit)")
     args = ap.parse_args()
@@ -91,6 +92,24 @@ def main() -> int:
 
     results.sort(key=lambda x: x[0], reverse=True)
     top = results[: args.k]
+
+    if args.format == "toon":
+        from toon_min import toon_table
+
+        rows = []
+        for i, (s, path, idx, ch) in enumerate(top, start=1):
+            rows.append(
+                {
+                    "rank": i,
+                    "source": path,
+                    "chunk": idx,
+                    "score": round(float(s), 6),
+                    "snippet": ch.strip(),
+                }
+            )
+        print("query: " + args.q)
+        print(toon_table("chunks", rows))
+        return 0
 
     print("# RAG context pack (lexical)\n")
     print(f"Query: {args.q}\n")
