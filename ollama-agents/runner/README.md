@@ -29,4 +29,8 @@ Perfiles disponibles (ver `../agents/*.yaml`):
 - reviewer
 
 ## Nota de recursos
-Algunos modelos son pesados; Rex debe orquestar con criterio (tareas acotadas, logs reales, iteración por gating).
+Algunos modelos son pesados; Rex debe orquestar con criterio:
+- **Un modelo a la vez (serial)**.
+- Tras modelos pesados, considerar reiniciar Ollama para liberar VRAM.
+
+Ver: `../docs/VRAM_POLICY.md`.
