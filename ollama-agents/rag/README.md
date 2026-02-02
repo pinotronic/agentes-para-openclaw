@@ -1,20 +1,53 @@
-# RAG (memoria de trabajo) - diseño
+# RAG (memoria de trabajo)
 
 Objetivo: dar a los agentes contexto consistente sobre **cómo trabajamos** y **cómo es el repo** sin meter datos privados.
 
 ## Principios
 - **Allowlist** (preferido): indexar únicamente rutas seguras.
 - Nunca indexar secretos/datos personales/bancarios (ver `../POLICY.md`).
+- **No se guardan chats** (solo docs/código permitido).
 - El RAG asiste; la verificación final siempre es por herramientas (tests/lint/build).
 
-## Colecciones sugeridas
-1) `playbook`: guías de rol, Definition of Done, estilo.
-2) `repo_docs`: README, docs internas.
-3) `code_examples`: snippets ejemplares (sin secretos).
-4) `adrs`: decisiones de arquitectura.
+## Modo recomendado (estable): Lexical RAG (sin vectores)
+Este modo evita dependencias pesadas (Chroma/onnx/tokenizers) que pueden congelar la máquina.
 
-## Embeddings
-Usar: `nomic-embed-text-v2-moe:latest`.
+Consulta (no requiere indexado):
 
-## Estado
-Pendiente: implementar indexador + almacenamiento vectorial (chroma/sqlite/pgvector). Se hará cuando Pinotronic defina el primer repo objetivo.
+```bash
+python3 scripts/lexical_rag.py --q "flujo TDD" --k 6
+```
+
+## Modo experimental: Chroma + embeddings
+Existe, pero **NO es default** debido a congelamientos reportados.
+
+- Vector DB: Chroma (persistente)
+- Embeddings: Ollama `nomic-embed-text-v2-moe:latest`
+
+Instalación:
+
+```bash
+cd ollama-agents/rag
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Indexar (si tu máquina lo tolera):
+
+```bash
+python3 scripts/index.py --reset --batch 1 --max-chunks 50
+```
+
+Consultar:
+
+```bash
+python3 scripts/query.py --q "flujo TDD" --k 6
+```
+
+## Qué se consulta (allowlist)
+- `README.md`
+- `docs/**`
+- `ollama-agents/**`
+
+## Nota
+Si un chunk parece sensible según patrones conservadores, se omite.

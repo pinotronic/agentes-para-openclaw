@@ -53,14 +53,44 @@ def main() -> int:
     ap.add_argument("--agent", required=True, help="agent id (e.g. planner)")
     ap.add_argument("--input", required=True, help="user input / task")
     ap.add_argument("--context", default="", help="extra context text")
+    ap.add_argument("--rag", default="", help="optional RAG query to inject additional context")
+    ap.add_argument(
+        "--rag-k",
+        type=int,
+        default=6,
+        help="top-k chunks to retrieve when --rag is provided",
+    )
     args = ap.parse_args()
 
     prof = load_profile(args.agent)
     system = (prof.get("system") or "").strip()
 
+    rag_context = ""
+    if args.rag.strip():
+        # Prefer lexical fallback to avoid heavy deps/freezes.
+        # Chroma-based query remains available via query.py, but is not default.
+        try:
+            import subprocess as _sp
+
+            rag_script = ROOT / "rag" / "scripts" / "lexical_rag.py"
+            p = _sp.run(
+                [sys.executable, str(rag_script), "--q", args.rag.strip(), "--k", str(args.rag_k)],
+                text=True,
+                stdout=_sp.PIPE,
+                stderr=_sp.PIPE,
+            )
+            if p.returncode == 0:
+                rag_context = p.stdout
+            else:
+                rag_context = f"(RAG query failed: {p.stderr.strip()})"
+        except Exception as e:
+            rag_context = f"(RAG unavailable: {e})"
+
+    merged_context = "\n\n".join([c for c in [args.context.strip(), rag_context.strip()] if c.strip()])
+
     prompt = (
         f"<SYSTEM>\n{system}\n</SYSTEM>\n\n"
-        f"<CONTEXT>\n{args.context.strip()}\n</CONTEXT>\n\n"
+        f"<CONTEXT>\n{merged_context}\n</CONTEXT>\n\n"
         f"<TASK>\n{args.input.strip()}\n</TASK>\n"
     )
 
