@@ -5,8 +5,8 @@
 - Orchestrates local Ollama agents via `ollama-agents/runner/ollama_agent.py`.
 - Runs quality gate commands from adapter.
 
-This is an MVP: it prints suggested actions and runs gates; applying patches is manual for now.
-Next iteration will add patch application and structured IO.
+This is an MVP+ loop: it can apply unified diffs from agents via `git apply` and iterate.
+Structured IO and richer patch hygiene will be added next.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from adapters import ALL_ADAPTERS
+from patch_apply import git_apply
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNNER = REPO_ROOT / "ollama-agents" / "runner" / "ollama_agent.py"
@@ -24,6 +25,17 @@ RUNNER = REPO_ROOT / "ollama-agents" / "runner" / "ollama_agent.py"
 
 def sh(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=str(cwd), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def run_gates(project: Path, commands: list[list[str]]) -> tuple[bool, str]:
+    """Run quality gates, return (ok, combined_log)."""
+    logs: list[str] = []
+    for cmd in commands:
+        p = sh(cmd, cwd=project)
+        logs.append(f"$ {' '.join(cmd)}\n{p.stdout}\n{p.stderr}\n")
+        if p.returncode != 0:
+            return False, "\n".join(logs)
+    return True, "\n".join(logs)
 
 
 def pick_adapter(project: Path):
@@ -73,24 +85,77 @@ def main() -> int:
     print("== Task ==")
     print(args.task)
 
+    # Safety: require git repo and clean state
+    if not (project / ".git").exists():
+        raise SystemExit("Project is not a git repo (.git missing). Initialize git first.")
+    dirty = sh(["git", "status", "--porcelain"], cwd=project).stdout.strip()
+    if dirty:
+        raise SystemExit("Project has uncommitted changes. Commit/stash first to keep pipeline safe.")
+
+    gate_cmds = adapter.commands(project)
+
     # 1) Plan
     print("\n== Planner output ==")
     plan = run_agent("planner", args.task, context=context, rag=rag, rag_k=args.rag_k)
     print(plan)
 
-    # 2) Tests
-    print("\n== Test writer output ==")
-    tests = run_agent("test_writer", f"Based on this plan, write tests first:\n\n{plan}", context=context, rag=rag, rag_k=args.rag_k)
-    print(tests)
+    # 2) Write tests (diff)
+    print("\n== Test writer (diff) ==")
+    test_task = (
+        "Write tests FIRST for this task. Output ONLY a unified diff patch applicable with git apply.\n\n"
+        f"TASK: {args.task}\n\nPLAN:\n{plan}\n"
+    )
+    test_diff = run_agent("test_writer", test_task, context=context, rag=rag, rag_k=args.rag_k)
+    ok, msg = git_apply(project, test_diff)
+    if not ok:
+        raise SystemExit(f"Failed to apply test diff: {msg}")
 
-    # NOTE: MVP stops short of applying patches automatically.
-    # Next version will apply diffs and loop.
+    # Loop: run gates, diagnose+implement until green or max-iters
+    last_logs = ""
+    for i in range(1, args.max_iters + 1):
+        print(f"\n== Iteration {i}/{args.max_iters}: run gates ==")
+        ok, logs = run_gates(project, gate_cmds)
+        last_logs = logs
+        if ok:
+            print("All gates passed ✅")
+            break
 
-    print("\n== Quality gate commands (adapter) ==")
-    for c in adapter.commands(project):
-        print("-", " ".join(c))
+        print("Gates failed ❌")
+        # 3) Diagnose
+        diag_task = (
+            "You are given real command output (tests/lint/build). Diagnose and propose minimal fix.\n\n"
+            f"LOGS:\n{logs}\n"
+        )
+        diag = run_agent("diagnoser", diag_task, context=context, rag=rag, rag_k=args.rag_k)
+        print("\n== Diagnoser ==")
+        print(diag)
 
-    print("\nMVP note: apply suggested test/code changes, then re-run gates. Next iteration will auto-apply diffs and loop until green.")
+        # 4) Implement fix (diff)
+        impl_task = (
+            "Fix the failing gates with minimal changes. Output ONLY a unified diff patch applicable with git apply.\n\n"
+            f"TASK: {args.task}\n\nPLAN:\n{plan}\n\nDIAGNOSIS:\n{diag}\n\nLOGS:\n{logs}\n"
+        )
+        impl_diff = run_agent("implementer", impl_task, context=context, rag=rag, rag_k=args.rag_k)
+        ok2, msg2 = git_apply(project, impl_diff)
+        if not ok2:
+            raise SystemExit(f"Failed to apply implementer diff: {msg2}")
+
+    else:
+        print("\nReached max iterations without green gates.")
+
+    # Reviewer summary (optional)
+    print("\n== Reviewer ==")
+    rev_task = (
+        "Review the current changes for quality/security/testability.\n\n"
+        "Provide BLOCKER/IMPORTANT/NICE issues.\n"
+    )
+    review = run_agent("reviewer", rev_task, context=context, rag=rag, rag_k=args.rag_k)
+    print(review)
+
+    # Show git status summary
+    print("\n== Git status ==")
+    print(sh(["git", "status", "--porcelain"], cwd=project).stdout)
+
     return 0
 
 

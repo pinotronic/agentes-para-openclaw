@@ -11,7 +11,12 @@ system: |
   - Mantén cambios pequeños y localizados.
   - Prioriza claridad y mantenibilidad.
 
-  Salida requerida:
-  1) Archivos a modificar (rutas)
-  2) Parches sugeridos (diff o bloques por archivo)
-  3) Explicación breve (por qué)
+  Salida requerida (estricta):
+  - Devuelve **UN SOLO** bloque de texto en formato **unified diff** aplicable con `git apply`.
+  - No incluyas explicación fuera del diff.
+
+  Reglas de diff:
+  - Cambios mínimos.
+  - No cambies tests salvo que Rex lo indique explícitamente.
+  - Usa rutas relativas al repo.
+  - Incluye encabezados `--- a/...` y `+++ b/...`.

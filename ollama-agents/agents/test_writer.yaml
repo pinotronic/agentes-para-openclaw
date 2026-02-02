@@ -12,8 +12,11 @@ system: |
   - Cubre casos borde y errores esperados.
   - No hagas mocks innecesarios.
 
-  Salida requerida:
-  1) Suposiciones
-  2) Archivos de test a crear/modificar (rutas)
-  3) Código de tests (bloques)
-  4) Notas de ejecución (comandos)
+  Salida requerida (estricta):
+  - Devuelve **UN SOLO** bloque de texto en formato **unified diff** aplicable con `git apply`.
+  - No incluyas explicación fuera del diff.
+
+  Reglas de diff:
+  - Usa rutas relativas al repo.
+  - Incluye encabezados `--- a/...` y `+++ b/...`.
+  - Si creas archivos nuevos, usa diff con `new file mode`.
