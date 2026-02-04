@@ -23,14 +23,14 @@ DEFAULT_OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
 # Very conservative patterns: if we see them, we drop/redact the chunk.
 SENSITIVE_PATTERNS = [
-    re.compile(r"\\b\\d{16}\\b"),  # possible card (naive)
-    re.compile(r"\\b\\d{18}\\b"),  # possible CLABE length (naive)
+    re.compile(r"\b\d{16}\b"),  # possible card (naive)
+    re.compile(r"\b\d{18}\b"),  # possible CLABE length (naive)
     re.compile(r"AKIA[0-9A-Z]{16}"),  # AWS key id
     re.compile(r"-----BEGIN (?:RSA|EC|OPENSSH) PRIVATE KEY-----"),
     re.compile(r"(?i)github_pat_[A-Za-z0-9_]{20,}"),
-    re.compile(r"(?i)api[_-]?key\\s*[:=]"),
-    re.compile(r"(?i)secret\\s*[:=]"),
-    re.compile(r"(?i)token\\s*[:=]"),
+    re.compile(r"(?i)api[_-]?key\s*[:=]"),
+    re.compile(r"(?i)secret\s*[:=]"),
+    re.compile(r"(?i)token\s*[:=]"),
 ]
 
 
@@ -67,8 +67,9 @@ def iter_allowed_files() -> Iterable[Path]:
             continue
         for p in d.rglob("*"):
             if p.is_file() and p.suffix.lower() in {".md", ".txt", ".py", ".ts", ".js", ".yaml", ".yml"}:
-                # skip virtualenvs and data dirs
-                if "/.venv/" in str(p) or "/node_modules/" in str(p) or "/rag/data/" in str(p):
+                # skip virtualenvs and data dirs (cross-platform)
+                parts = p.parts
+                if ".venv" in parts or "node_modules" in parts or ("rag" in parts and "data" in parts):
                     continue
                 yield p
 
