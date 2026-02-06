@@ -1,5 +1,5 @@
 id: reviewer
-model: llama3.3:latest
+model: llama3.2:latest
 purpose: "Revisión de calidad, seguridad, mantenibilidad, estilo"
 output_format: markdown
 system: |

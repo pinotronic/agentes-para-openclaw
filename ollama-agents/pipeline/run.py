@@ -60,6 +60,34 @@ def sh(cmd: list[str], cwd: Path, timeout: int | None = None) -> subprocess.Comp
         return result
 
 
+def get_agent_model(agent_id: str) -> str:
+    """Reads the agent's YAML file to get its model."""
+    agent_profile_path = REPO_ROOT / "ollama-agents" / "agents" / f"{agent_id}.yaml"
+    if not agent_profile_path.exists():
+        raise FileNotFoundError(f"Agent profile not found: {agent_profile_path}")
+    
+    # We need pyyaml to parse the yaml file
+    try:
+        import yaml
+    except ImportError:
+        raise SystemExit("PyYAML not installed. Install with: pip install pyyaml")
+
+    with open(agent_profile_path, "r") as f:
+        profile = yaml.safe_load(f)
+    return profile["model"]
+
+def stop_ollama_model(model_name: str):
+    """Executes 'ollama stop <model_name>' to free VRAM."""
+    log.info(f"Stopping Ollama model: {model_name}")
+    try:
+        subprocess.run(["ollama", "stop", model_name], check=True, capture_output=True, text=True)
+        log.info(f"Successfully stopped Ollama model: {model_name}")
+    except subprocess.CalledProcessError as e:
+        log.warning(f"Failed to stop Ollama model {model_name}: {e.stderr}")
+    except FileNotFoundError:
+        log.warning("Ollama command not found. Is Ollama installed and in PATH?")
+
+
 def run_gates(project: Path, commands: list[list[str]]) -> tuple[bool, str]:
     """Run quality gates, return (ok, combined_log)."""
     logs: list[str] = []
@@ -152,6 +180,7 @@ def main() -> int:
         f"Project: {project}\n"
         f"Adapter: {adapter.id} ({adapter.describe()})\n"
         f"Rules: TDD-first; small diffs; no secrets; follow repo conventions.\n"
+        f"Project Structure Hint: The Python backend code resides in 'backend/app/'. Tests for the backend are in 'backend/tests/'. Ensure all generated Python code respects this directory structure.\n"
     )
 
     rag = args.rag.strip() or None
@@ -183,6 +212,7 @@ def main() -> int:
         plan = run_agent("planner", args.task, context=context, rag=rag, rag_k=args.rag_k)
         print("\n== Planner output ==")
         print(plan)
+        stop_ollama_model(get_agent_model("planner"))
 
         # 2) Write tests (diff)
         log.info("Running test writer...")
@@ -195,6 +225,7 @@ def main() -> int:
         ok, msg = git_apply(project, test_diff)
         if not ok:
             raise SystemExit(f"Failed to apply test diff: {msg}")
+        stop_ollama_model(get_agent_model("test_writer"))
 
         # Save initial state
         save_state(project, {"task": args.task, "plan": plan, "iteration": 1, "phase": "gates"})
@@ -225,6 +256,7 @@ def main() -> int:
         diag = run_agent("diagnoser", diag_task, context=context, rag=rag, rag_k=args.rag_k)
         print("\n== Diagnoser ==")
         print(diag)
+        stop_ollama_model(get_agent_model("diagnoser"))
 
         # 4) Implement fix (diff)
         log.info("Running implementer...")
@@ -236,6 +268,7 @@ def main() -> int:
         ok2, msg2 = git_apply(project, impl_diff)
         if not ok2:
             raise SystemExit(f"Failed to apply implementer diff: {msg2}")
+        stop_ollama_model(get_agent_model("implementer"))
 
         # Save state after implementation
         save_state(project, {"task": args.task, "plan": plan, "iteration": i + 1, "phase": "gates"})
@@ -253,6 +286,7 @@ def main() -> int:
     )
     review = run_agent("reviewer", rev_task, context=context, rag=rag, rag_k=args.rag_k)
     print(review)
+    stop_ollama_model(get_agent_model("reviewer"))
 
     # Show git status summary
     print("\n== Git status ==")
