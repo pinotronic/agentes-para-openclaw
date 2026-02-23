@@ -23,6 +23,44 @@ from pathlib import Path
 from adapters import ALL_ADAPTERS
 from patch_apply import git_apply
 
+
+def _changed_paths(project: Path) -> list[str]:
+    # Includes staged+unstaged paths after applying diffs.
+    p = sh(["git", "status", "--porcelain"], cwd=project)
+    if p.returncode != 0:
+        return []
+    paths: list[str] = []
+    for line in p.stdout.splitlines():
+        if not line.strip():
+            continue
+        # Porcelain format: XY <path>
+        path = line[3:]
+        if path.startswith('"') and path.endswith('"'):
+            path = path[1:-1]
+        paths.append(path)
+    return paths
+
+
+def validate_project_changes(project: Path, *, adapter_id: str) -> tuple[bool, str]:
+    """Fail-closed guardrails to prevent agents from inventing parallel structures."""
+
+    paths = _changed_paths(project)
+    if not paths:
+        return True, "no changes"
+
+    # Hard rules for this monorepo (extend as needed)
+    if adapter_id == "fastapi-react-monorepo":
+        disallowed_prefixes = [
+            "frontend/tests/",  # tests must live under frontend/src/ for this repo
+            "frontend/src/components/App/",  # prevents parallel App tree
+        ]
+        for p in paths:
+            for pref in disallowed_prefixes:
+                if p.startswith(pref):
+                    return False, f"Disallowed change path: {p} (prefix {pref})"
+
+    return True, "ok"
+
 # Configuration from environment variables
 DEFAULT_MAX_ITERS = int(os.environ.get("PIPELINE_MAX_ITERS", 4))
 DEFAULT_RAG_K = int(os.environ.get("PIPELINE_RAG_K", 6))
@@ -240,6 +278,17 @@ def main() -> int:
         ok, msg = git_apply(project, test_diff)
         if not ok:
             raise SystemExit(f"Failed to apply test diff: {msg}")
+
+        okv, why = validate_project_changes(project, adapter_id=adapter.id)
+        if not okv:
+            # Revert to keep repo clean
+            sh(["git", "reset", "--hard"], cwd=project)
+            sh(["git", "clean", "-fd"], cwd=project)
+            raise SystemExit(
+                "Safety guardrail triggered after test diff. "
+                f"{why}. Reverted changes; adjust prompts/adapter rules."
+            )
+
         stop_ollama_model(get_agent_model("test_writer"))
 
         # Save initial state
@@ -283,6 +332,16 @@ def main() -> int:
         ok2, msg2 = git_apply(project, impl_diff)
         if not ok2:
             raise SystemExit(f"Failed to apply implementer diff: {msg2}")
+
+        okv2, why2 = validate_project_changes(project, adapter_id=adapter.id)
+        if not okv2:
+            sh(["git", "reset", "--hard"], cwd=project)
+            sh(["git", "clean", "-fd"], cwd=project)
+            raise SystemExit(
+                "Safety guardrail triggered after implementer diff. "
+                f"{why2}. Reverted changes; adjust prompts/adapter rules."
+            )
+
         stop_ollama_model(get_agent_model("implementer"))
 
         # Save state after implementation
