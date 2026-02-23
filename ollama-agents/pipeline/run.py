@@ -176,11 +176,26 @@ def main() -> int:
     if adapter is None:
         raise SystemExit("No adapter matched. Add one in ollama-agents/pipeline/adapters.")
 
+    # Project structure hints (critical to avoid agents inventing paths)
+    backend_hint = ""
+    if (project / "backend" / "src").exists():
+        backend_hint = "Backend: Python code in backend/src/. Tests in backend/tests/."
+    elif (project / "backend" / "app").exists():
+        backend_hint = "Backend: Python code in backend/app/. Tests in backend/tests/."
+
+    frontend_hint = ""
+    if (project / "frontend" / "src" / "App.tsx").exists():
+        frontend_hint = (
+            "Frontend: React entrypoint is frontend/src/App.tsx. "
+            "Do NOT create a parallel app under frontend/src/components/App/ unless explicitly requested."
+        )
+
     context = (
         f"Project: {project}\n"
         f"Adapter: {adapter.id} ({adapter.describe()})\n"
         f"Rules: TDD-first; small diffs; no secrets; follow repo conventions.\n"
-        f"Project Structure Hint: The Python backend code resides in 'backend/app/'. Tests for the backend are in 'backend/tests/'. Ensure all generated Python code respects this directory structure.\n"
+        + (f"{backend_hint}\n" if backend_hint else "")
+        + (f"{frontend_hint}\n" if frontend_hint else "")
     )
 
     rag = args.rag.strip() or None
