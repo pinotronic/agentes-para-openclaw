@@ -1,0 +1,22 @@
+name: test-pipeline
+base: python
+# Tests para verificar
+# 1. API /test endpoint
+# 2. Validación de que tests pasen
+# 3. No crear rutas /test
+
+Endpoints API
+- POST /test: crea test
+- GET /test/:show: muestra resultados
+
+Tests
+- test_api.py: test endpoint POST /test
+- test_validation.py: valida que no cree rutas /test
+
+Casos
+- POST /test con JSON válido: 201 Created
+- GET /test/ cuando no existe: 404
+
+Archivos
+- backend/app/main.py
+- backend/app/test.py

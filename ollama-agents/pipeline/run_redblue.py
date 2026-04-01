@@ -6,18 +6,9 @@ Flujo:
   CODE_CRITIC (Red) → Analiza código, encuentra problemas
         ↓
   DEFENDER (Blue) → Propone soluciones a los problemas
-        ↓
-  IMPLEMENTER → Aplica las soluciones
-        ↓
-  DIAGNOSER → Verifica si los tests pasan
 
 Uso:
   python run_redblue.py --code "print('hello')" --plan "..."
-
-Argumentos:
-  --code: Código a revisar (o path a archivo)
-  --plan: Plan/deliverable del PLANNER
-  --agent: qwen3.5:9b (modelo a usar)
 """
 
 import argparse
@@ -28,14 +19,17 @@ from pathlib import Path
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from runner.ollama_agent import OllamaAgent
+from runner.ollama_agent import load_profile, run_ollama_with_retry
 
 
 def run_red_team(code: str, plan: str) -> str:
     """Ejecuta CODE_CRITIC (Red Team)"""
     print("[RED] Iniciando CODE_CRITIC...")
     
-    prompt = f"""Eres CODE_CRITIC, un hacker ético que revisa código.
+    profile = load_profile('code_critic')
+    model = profile.get('model', 'qwen3.5:9b')
+    
+    prompt = f"""{profile['system']}
 
 ## PLAN DEL PROYECTO:
 {plan}
@@ -54,8 +48,7 @@ Revisa este código buscando:
 
 Sigue el formato de salida obligatorio."""
 
-    agent = OllamaAgent('code_critic')
-    result = agent.run(prompt)
+    result = run_ollama_with_retry(model, prompt)
     print(f"[RED] CODE_CRITIC completó. {len(result)} caracteres")
     return result
 
@@ -64,7 +57,10 @@ def run_blue_team(critic_output: str, code: str, plan: str) -> str:
     """Ejecuta DEFENDER (Blue Team)"""
     print("[BLUE] Iniciando DEFENDER...")
     
-    prompt = f"""Eres DEFENDER, un ingeniero defensivo que propone soluciones a problemas de código.
+    profile = load_profile('defender')
+    model = profile.get('model', 'qwen3.5:9b')
+    
+    prompt = f"""{profile['system']}
 
 ## PLAN DEL PROYECTO:
 {plan}
@@ -85,8 +81,7 @@ Para cada crítica del CODE_CRITIC, propón:
 
 Sigue el formato de salida obligatorio."""
 
-    agent = OllamaAgent('defender')
-    result = agent.run(prompt)
+    result = run_ollama_with_retry(model, prompt)
     print(f"[BLUE] DEFENDER completó. {len(result)} caracteres")
     return result
 

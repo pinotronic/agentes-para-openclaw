@@ -1,0 +1,4 @@
+# requirements.txt
+gTTS==2.5.4
+elevenlabs==2.40.0
+python-dotenv==1.0.0
