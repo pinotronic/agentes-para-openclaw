@@ -4,7 +4,7 @@
 - **What to call them:** Pinotronic
 - **Pronouns:** 
 - **Timezone:** America/Mexico_City
-- **Notes:** Desarrolla software. Quiere que Rex le ayude a crear software (entre otras tareas). También se comunica por Telegram.
+- **Notes:** Desarrolla software. Quiere que Rex le ayude a crear software (entre otras tareas). También se comunica por Telegram con voz o texto.
 
 ## Context
 

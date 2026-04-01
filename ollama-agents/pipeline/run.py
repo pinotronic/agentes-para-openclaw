@@ -22,6 +22,7 @@ from pathlib import Path
 
 from adapters import ALL_ADAPTERS
 from patch_apply import git_apply
+from mission_control import MissionControl
 
 
 def _changed_paths(project: Path) -> list[str]:
@@ -241,12 +242,17 @@ def main() -> int:
     log.info(f"Adapter: {adapter.id} - {adapter.describe()}")
     log.info(f"Task: {args.task}")
 
+    # Mission Control (run tracking)
+    mc = MissionControl.start(project, task=args.task, adapter_id=adapter.id)
+
     # Safety: require git repo and clean state
     if not (project / ".git").exists():
         raise SystemExit("Project is not a git repo (.git missing). Initialize git first.")
     dirty = sh(["git", "status", "--porcelain"], cwd=project).stdout.strip()
     if dirty:
         raise SystemExit("Project has uncommitted changes. Commit/stash first to keep pipeline safe.")
+
+    mc.event("safety_ok")
 
     gate_cmds = adapter.commands(project)
 
@@ -262,13 +268,16 @@ def main() -> int:
     else:
         # 1) Plan
         log.info("Running planner...")
+        mc.event("agent_start", {"agent": "planner"})
         plan = run_agent("planner", args.task, context=context, rag=rag, rag_k=args.rag_k)
         print("\n== Planner output ==")
         print(plan)
         stop_ollama_model(get_agent_model("planner"))
+        mc.event("agent_stop", {"agent": "planner"})
 
         # 2) Write tests (diff)
         log.info("Running test writer...")
+        mc.event("agent_start", {"agent": "test_writer"})
         print("\n== Test writer (diff) ==")
         test_task = (
             "Write tests FIRST for this task. Output ONLY a unified diff patch applicable with git apply.\n\n"
@@ -290,6 +299,7 @@ def main() -> int:
             )
 
         stop_ollama_model(get_agent_model("test_writer"))
+        mc.event("agent_stop", {"agent": "test_writer"})
 
         # Save initial state
         save_state(project, {"task": args.task, "plan": plan, "iteration": 1, "phase": "gates"})
@@ -300,6 +310,7 @@ def main() -> int:
         log.info(f"Iteration {i}/{args.max_iters}: running gates")
         print(f"\n== Iteration {i}/{args.max_iters}: run gates ==")
         ok, logs = run_gates(project, gate_cmds)
+        mc.event("gates", {"iteration": i, "ok": ok})
         last_logs = logs
         if ok:
             log.info("All gates passed")
@@ -317,13 +328,16 @@ def main() -> int:
             "You are given real command output (tests/lint/build). Diagnose and propose minimal fix.\n\n"
             f"LOGS:\n{logs}\n"
         )
+        mc.event("agent_start", {"agent": "diagnoser", "iteration": i})
         diag = run_agent("diagnoser", diag_task, context=context, rag=rag, rag_k=args.rag_k)
         print("\n== Diagnoser ==")
         print(diag)
         stop_ollama_model(get_agent_model("diagnoser"))
+        mc.event("agent_stop", {"agent": "diagnoser", "iteration": i})
 
         # 4) Implement fix (diff)
         log.info("Running implementer...")
+        mc.event("agent_start", {"agent": "implementer", "iteration": i})
         impl_task = (
             "Fix the failing gates with minimal changes. Output ONLY a unified diff patch applicable with git apply.\n\n"
             f"TASK: {args.task}\n\nPLAN:\n{plan}\n\nDIAGNOSIS:\n{diag}\n\nLOGS:\n{logs}\n"
@@ -343,6 +357,7 @@ def main() -> int:
             )
 
         stop_ollama_model(get_agent_model("implementer"))
+        mc.event("agent_stop", {"agent": "implementer", "iteration": i})
 
         # Save state after implementation
         save_state(project, {"task": args.task, "plan": plan, "iteration": i + 1, "phase": "gates"})
@@ -353,6 +368,7 @@ def main() -> int:
 
     # Reviewer summary (optional)
     log.info("Running reviewer...")
+    mc.event("agent_start", {"agent": "reviewer"})
     print("\n== Reviewer ==")
     rev_task = (
         "Review the current changes for quality/security/testability.\n\n"
@@ -361,6 +377,7 @@ def main() -> int:
     review = run_agent("reviewer", rev_task, context=context, rag=rag, rag_k=args.rag_k)
     print(review)
     stop_ollama_model(get_agent_model("reviewer"))
+    mc.event("agent_stop", {"agent": "reviewer"})
 
     # Show git status summary
     print("\n== Git status ==")
@@ -369,6 +386,7 @@ def main() -> int:
     # Clear state on success
     clear_state(project)
 
+    mc.finish_ok()
     return 0
 
 

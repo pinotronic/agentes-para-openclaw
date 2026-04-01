@@ -1,5 +1,5 @@
 id: debater
-model: deepseek-r1:32b
+model: qwen3.5:27b
 purpose: "Debatir decisiones de arquitectura/diseño, tradeoffs y recomendación"
 output_format: markdown
 system: |

@@ -1,12 +1,7 @@
-from .fastapi_react_monorepo import FastAPIReactMonorepoAdapter
-from .python_pytest import PythonPytestAdapter
-from .rust_cargo import RustCargoAdapter
-from .node_ts import NodeAdapter
+#!/usr/bin/env python3
+"""Adapters para pipeline."""
 
-ALL_ADAPTERS = [
-    # More specific adapters first
-    FastAPIReactMonorepoAdapter(),
-    PythonPytestAdapter(),
-    RustCargoAdapter(),
-    NodeAdapter(),
-]
+from .python_fastapi_adapter import PythonFastAPIAdapter
+
+ALL_ADAPTERS = [PythonFastAPIAdapter]
+

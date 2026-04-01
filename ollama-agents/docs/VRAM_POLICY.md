@@ -24,5 +24,6 @@ nvidia-smi
 ## Cuándo reiniciar
 - Tras cada ejecución de `qwen3-coder:30b`.
 - Tras cada ejecución de `deepseek-r1:32b`.
+- Tras cada ejecución de `llama3.3:latest`.
 - Tras indexado de embeddings.
 - Si el sistema se pone lento o `nvidia-smi` muestra VRAM alta sostenida.

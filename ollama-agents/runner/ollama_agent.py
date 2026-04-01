@@ -24,7 +24,7 @@ except Exception:
     yaml = None
 
 # Configuration from environment variables
-OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", 300))  # 5 minutes default
+OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", 1200))  # 20 minutes default
 OLLAMA_RETRIES = int(os.environ.get("OLLAMA_RETRIES", 2))
 OLLAMA_RETRY_DELAY = int(os.environ.get("OLLAMA_RETRY_DELAY", 5))  # seconds
 
@@ -107,7 +107,9 @@ def main() -> int:
         default=6,
         help="top-k chunks to retrieve when --rag is provided",
     )
-    ap.add_argument("--timeout", type=int, default=OLLAMA_TIMEOUT, help="timeout in seconds")
+    # Allow command line to override timeout, but default to env or 1200
+    timeout = ap.get_default("timeout") or OLLAMA_TIMEOUT
+    ap.add_argument("--timeout", type=int, default=timeout, help="timeout in seconds")
     ap.add_argument("--retries", type=int, default=OLLAMA_RETRIES, help="number of retries")
     ap.add_argument("--verbose", "-v", action="store_true", help="enable debug logging")
     args = ap.parse_args()

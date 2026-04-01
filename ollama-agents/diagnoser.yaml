@@ -1,5 +1,5 @@
 id: diagnoser
-model: llama3.2:3b
+model: qwen3:14b
 purpose: "Interpretar fallos de tests/build/lint y proponer fix mínimo"
 output_format: markdown
 system: |

@@ -1,40 +1,64 @@
-# TOOLS.md - Local Notes
+# TOOLS.md - Notas Locales
 
-Skills define _how_ tools work. This file is for _your_ specifics — the stuff that's unique to your setup.
+Las habilidades definen _cómo_ funcionan las herramientas. Este archivo es para _tus_ detalles: lo que es exclusivo de tu configuración.
 
-## What Goes Here
+## Qué va aquí
 
-Things like:
+Información como:
 
-- Camera names and locations
-- SSH hosts and aliases
-- Preferred voices for TTS
-- Speaker/room names
-- Device nicknames
-- Anything environment-specific
+- Nombres y ubicaciones de las cámaras
+- Hosts y alias SSH
+- Voces preferidas para TTS
+- Nombres de altavoces/salas
+- Apodos de los dispositivos
+- Cualquier información específica del entorno
 
-## Examples
+## Ejemplos
 
 ```markdown
-### Cameras
+### Cámaras
 
-- living-room → Main area, 180° wide angle
-- front-door → Entrance, motion-triggered
+- Sala de estar → Área principal, ángulo amplio de 180°
+- Puerta principal → Entrada, activada por movimiento
 
 ### SSH
 
-- home-server → 192.168.1.100, user: admin
+- Servidor doméstico → 192.168.1.100, usuario: admin
 
 ### TTS
 
-- Preferred voice: "Nova" (warm, slightly British)
-- Default speaker: Kitchen HomePod
+- Voz preferida: "Nova" (cálida, ligeramente británica)
+- Altavoz predeterminado: HomePod de la cocina
 ```
 
-## Why Separate?
+## ¿Por qué separar?
 
-Skills are shared. Your setup is yours. Keeping them apart means you can update skills without losing your notes, and share skills without leaking your infrastructure.
+Las habilidades se comparten. Tu configuración es tuya. Mantenerlas separadas te permite actualizar habilidades sin perder tus notas y compartirlas sin filtrar tu infraestructura.
 
 ---
 
-Add whatever helps you do your job. This is your cheat sheet.
+Agrega lo que te ayude a realizar tu trabajo. Esta es tu hoja de referencia.
+
+## MiniMax TTS (Text-to-Speech)
+
+**API:** `https://api.minimax.io/v1/t2a_v2`
+**Modelo:** `speech-2.8-hd`
+**Auth:** Bearer token desde `~/.openclaw/.env` → `MINIMAX_API_KEY`
+
+**Voces favoritas (Standard Spanish):**
+- `Spanish_MaturePartner` — masculino maduro (01)
+- `Spanish_ConfidentWoman` — femenino, seguro (04) ← **favorita**
+
+**Voz recomendada para mexicano:** `Spanish_ConfidentWoman`
+
+**Generar audio:**
+```bash
+source ~/.openclaw/.env
+curl -s -X POST "https://api.minimax.io/v1/t2a_v2" \
+  -H "Authorization: Bearer $MINIMAX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "speech-2.8-hd", "text": "texto", "voice_setting": {"voice_id": "Spanish_ConfidentWoman"}, "audio_setting": {"sample_rate": 32000, "bitrate": 128000, "format": "mp3"}}' \
+  | python3 -c "import sys,json;hex=json.load(sys.stdin)['data']['audio'];open('/tmp/output.mp3','wb').write(bytes.fromhex(hex))"
+```
+
+**Lista completa de voces:** `POST https://api.minimax.io/v1/get_voice` con `{"voice_type": "all"}`
