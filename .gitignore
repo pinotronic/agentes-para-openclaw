@@ -14,3 +14,12 @@ build/
 
 # OS
 .DS_Store
+
+# Workspace folders outside OpenClaw core
+agentes-para-openclaw/
+avatar/
+cajera-avatar-web/
+projects/
+test-agents-rtx5090/
+venv-gen/
+voz_rex/
