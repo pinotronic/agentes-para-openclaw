@@ -184,6 +184,7 @@ def validate_project_changes(project: Path, *, adapter_id: str) -> tuple[bool, s
 # Configuration from environment variables
 DEFAULT_MAX_ITERS = int(os.environ.get("PIPELINE_MAX_ITERS", 4))
 DEFAULT_RAG_K = int(os.environ.get("PIPELINE_RAG_K", 6))
+DEFAULT_PIPELINE_PERMISSION_MODE = os.environ.get("PIPELINE_PERMISSION_MODE", "strict")
 AGENT_TIMEOUT = int(os.environ.get("PIPELINE_AGENT_TIMEOUT", 300))  # 5 minutes
 GATE_TIMEOUT = int(os.environ.get("PIPELINE_GATE_TIMEOUT", 120))  # 2 minutes
 STATE_FILE = ".pipeline_state.json"
@@ -224,13 +225,21 @@ def build_reviewer_task(
     *,
     redblue_review: dict[str, str] | None,
     redblue_autofix: dict[str, str] | None,
+    changed_paths: list[str] | None = None,
 ) -> str:
     """Build reviewer task text with structured findings contract."""
     review_task = (
         "Review the current changes for quality/security/testability.\n\n"
-        "Provide BLOCKER/IMPORTANT/NICE issues.\n\n"
+        "Provide BLOCKER/IMPORTANT/NICE issues.\n"
+        "Focus especially on scope creep, dead code, orphan files, duplicated structures, and drift from the task/plan.\n\n"
         f"{STRUCTURED_FINDINGS_SPEC}\n"
     )
+    if changed_paths:
+        review_task += (
+            "\nChanged paths under review:\n"
+            + "\n".join(f"- {path}" for path in changed_paths)
+            + "\n"
+        )
     if redblue_review:
         review_task += (
             "\nConsider these prior red/blue findings as additional review context.\n\n"
@@ -244,6 +253,32 @@ def build_reviewer_task(
             f"AUTOFIX BLOCKERS:\n{redblue_autofix['blockers']}\n"
         )
     return review_task
+
+
+def build_implementer_task(
+    *,
+    task: str,
+    plan: str,
+    diagnosis: str,
+    logs: str,
+    changed_paths: list[str] | None = None,
+) -> str:
+    """Build a constrained implementer task for diff-first execution."""
+    candidate_paths = changed_paths or []
+    path_block = "\n".join(f"- {path}" for path in candidate_paths) if candidate_paths else "- none"
+    return (
+        "Fix the failing gates with minimal changes. Output ONLY a unified diff patch applicable with git apply.\n\n"
+        "Hard constraints:\n"
+        "- Prefer modifying only the candidate paths below or their direct dependencies.\n"
+        "- Do not create parallel structures, backup files, temp files, or dead code.\n"
+        "- Do not add new files unless strictly required by the failing gates and the file will be referenced immediately.\n"
+        "- Keep the patch as small as possible.\n\n"
+        f"TASK: {task}\n\n"
+        f"PLAN:\n{plan}\n\n"
+        f"DIAGNOSIS:\n{diagnosis}\n\n"
+        f"LOGS:\n{logs}\n\n"
+        f"CANDIDATE PATHS:\n{path_block}\n"
+    )
 REVIEW_FINDINGS_RE = re.compile(r"<REVIEW_FINDINGS>\s*(.*?)\s*</REVIEW_FINDINGS>", re.DOTALL)
 
 
@@ -353,11 +388,14 @@ def run_agent(
     rag: str | None = None,
     rag_k: int = 6,
     mission_control: MissionControl | None = None,
+    permission_mode: str | None = None,
 ) -> str:
     """Run an agent with timeout and retry logic."""
     cmd = [sys.executable, str(RUNNER), "--agent", agent, "--input", task, "--context", context]
     if workspace is not None:
         cmd += ["--workspace", str(workspace)]
+    if permission_mode:
+        cmd += ["--permission-mode", permission_mode]
     if rag:
         cmd += ["--rag", rag, "--rag-k", str(rag_k)]
 
@@ -441,6 +479,7 @@ def main() -> int:
     ap.add_argument("--rag-k", type=int, default=DEFAULT_RAG_K)
     ap.add_argument("--redblue", action="store_true", help="run optional red/blue review stage before reviewer")
     ap.add_argument("--redblue-autofix", action="store_true", help="run one implementer autofix pass for red/blue BLOCKER findings")
+    ap.add_argument("--permission-mode", choices=["strict", "permissive"], default=DEFAULT_PIPELINE_PERMISSION_MODE, help="runtime permission mode used for all agent executions")
     ap.add_argument("--resume", action="store_true", help="resume from saved state")
     ap.add_argument("--verbose", "-v", action="store_true", help="enable debug logging")
     args = ap.parse_args()
@@ -510,7 +549,7 @@ def main() -> int:
         # 1) Plan
         log.info("Running planner...")
         mc.event("agent_start", {"agent": "planner"})
-        plan = run_agent("planner", args.task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
+        plan = run_agent("planner", args.task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         print("\n== Planner output ==")
         print(plan)
         stop_ollama_model(get_agent_model("planner", workspace=project))
@@ -524,7 +563,7 @@ def main() -> int:
             "Write tests FIRST for this task. Output ONLY a unified diff patch applicable with git apply.\n\n"
             f"TASK: {args.task}\n\nPLAN:\n{plan}\n"
         )
-        test_diff = run_agent("test_writer", test_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
+        test_diff = run_agent("test_writer", test_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         ok, msg = git_apply(project, test_diff)
         if not ok:
             raise SystemExit(f"Failed to apply test diff: {msg}")
@@ -570,7 +609,7 @@ def main() -> int:
             f"LOGS:\n{logs}\n"
         )
         mc.event("agent_start", {"agent": "diagnoser", "iteration": i})
-        diag = run_agent("diagnoser", diag_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
+        diag = run_agent("diagnoser", diag_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         print("\n== Diagnoser ==")
         print(diag)
         stop_ollama_model(get_agent_model("diagnoser", workspace=project))
@@ -579,11 +618,14 @@ def main() -> int:
         # 4) Implement fix (diff)
         log.info("Running implementer...")
         mc.event("agent_start", {"agent": "implementer", "iteration": i})
-        impl_task = (
-            "Fix the failing gates with minimal changes. Output ONLY a unified diff patch applicable with git apply.\n\n"
-            f"TASK: {args.task}\n\nPLAN:\n{plan}\n\nDIAGNOSIS:\n{diag}\n\nLOGS:\n{logs}\n"
+        impl_task = build_implementer_task(
+            task=args.task,
+            plan=plan,
+            diagnosis=diag,
+            logs=logs,
+            changed_paths=_changed_paths(project),
         )
-        impl_diff = run_agent("implementer", impl_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
+        impl_diff = run_agent("implementer", impl_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         ok2, msg2 = git_apply(project, impl_diff)
         if not ok2:
             raise SystemExit(f"Failed to apply implementer diff: {msg2}")
@@ -646,8 +688,8 @@ def main() -> int:
     log.info("Running reviewer...")
     mc.event("agent_start", {"agent": "reviewer"})
     print("\n== Reviewer ==")
-    rev_task = build_reviewer_task(redblue_review=redblue_review, redblue_autofix=redblue_autofix)
-    review = run_agent("reviewer", rev_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
+    rev_task = build_reviewer_task(redblue_review=redblue_review, redblue_autofix=redblue_autofix, changed_paths=_changed_paths(project))
+    review = run_agent("reviewer", rev_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
     print(review)
     stop_ollama_model(get_agent_model("reviewer", workspace=project))
     mc.event("agent_stop", {"agent": "reviewer"})

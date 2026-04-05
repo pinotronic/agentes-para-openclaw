@@ -137,13 +137,31 @@ def test_build_reviewer_task_includes_structured_contract_and_context():
     result = pipeline_run.build_reviewer_task(
         redblue_review={"red": "red text", "blue": "blue text", "diff": "diff text"},
         redblue_autofix={"blockers": "BLOCKER: fix auth", "diff": "patch"},
+        changed_paths=["src/app.py", "tests/test_app.py"],
     )
 
     assert "<REVIEW_FINDINGS>" in result
     assert '"severity":"BLOCKER|IMPORTANT|NICE"' in result
+    assert "Changed paths under review:" in result
+    assert "- src/app.py" in result
     assert "RED TEAM:\nred text" in result
     assert "BLUE TEAM:\nblue text" in result
     assert "AUTOFIX BLOCKERS:\nBLOCKER: fix auth" in result
+
+
+def test_build_implementer_task_includes_candidate_paths_and_constraints():
+    result = pipeline_run.build_implementer_task(
+        task="fix failing test",
+        plan="plan",
+        diagnosis="diag",
+        logs="logs",
+        changed_paths=["src/app.py", "tests/test_app.py"],
+    )
+
+    assert "Output ONLY a unified diff patch" in result
+    assert "Do not create parallel structures" in result
+    assert "CANDIDATE PATHS:" in result
+    assert "- src/app.py" in result
 
 
 def test_record_agent_manifest_updates_mission_control(tmp_path, monkeypatch):
@@ -179,12 +197,13 @@ def test_record_agent_manifest_updates_mission_control(tmp_path, monkeypatch):
 
 def test_run_agent_records_manifest_to_mission_control(tmp_path, monkeypatch):
     fake_mc = _FakeMissionControl()
+    captured = {}
 
-    monkeypatch.setattr(
-        pipeline_run,
-        "sh",
-        lambda cmd, cwd, timeout=None: type("Result", (), {"returncode": 0, "stdout": "agent output", "stderr": ""})(),
-    )
+    def fake_sh(cmd, cwd, timeout=None):
+        captured["cmd"] = cmd
+        return type("Result", (), {"returncode": 0, "stdout": "agent output", "stderr": ""})()
+
+    monkeypatch.setattr(pipeline_run, "sh", fake_sh)
     monkeypatch.setattr(
         pipeline_run,
         "get_agent_status",
@@ -212,9 +231,12 @@ def test_run_agent_records_manifest_to_mission_control(tmp_path, monkeypatch):
         context="ctx",
         workspace=tmp_path,
         mission_control=fake_mc,
+        permission_mode="strict",
     )
 
     assert result == "agent output"
+    assert "--permission-mode" in captured["cmd"]
+    assert "strict" in captured["cmd"]
     assert fake_mc.events[0][0] == "agent_manifest"
     assert fake_mc.events[0][1]["agent_id"] == "planner"
     assert fake_mc.summary_merges[0]["agents"]["planner"]["status"] == "completed"

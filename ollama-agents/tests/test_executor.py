@@ -15,6 +15,18 @@ from agents.executor import (
 )
 
 
+def _write_agent_override(tmp_path: Path, agent_id: str, permissions_yaml: str) -> None:
+    agent_dir = tmp_path / ".openclaw" / "agents"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / f"{agent_id}.yaml").write_text(
+        f"id: {agent_id}\n"
+        "model: local-test\n"
+        f"system: local {agent_id}\n"
+        f"permissions:\n{permissions_yaml}",
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture(autouse=True)
 def strict_runtime_permissions(monkeypatch):
     monkeypatch.setenv("OLLAMA_AGENT_PERMISSION_MODE", "strict")
@@ -106,6 +118,11 @@ def test_executor_write_file_creates_parent_dirs(tmp_path):
 
 
 def test_executor_edit_file_replaces_single_match(tmp_path):
+    _write_agent_override(
+        tmp_path,
+        "implementer",
+        "  inherit: false\n  default_mode: workspace_write\n  allowed_tools:\n    - edit_file\n",
+    )
     (tmp_path / "module.py").write_text("value = 1\n", encoding="utf-8")
     executor = ToolExecutor(agent_id="implementer", workspace=tmp_path)
 
@@ -121,6 +138,11 @@ def test_executor_edit_file_replaces_single_match(tmp_path):
 
 
 def test_executor_edit_file_requires_replace_all_for_multiple_matches(tmp_path):
+    _write_agent_override(
+        tmp_path,
+        "implementer",
+        "  inherit: false\n  default_mode: workspace_write\n  allowed_tools:\n    - edit_file\n",
+    )
     (tmp_path / "module.py").write_text("x\nx\n", encoding="utf-8")
     executor = ToolExecutor(agent_id="implementer", workspace=tmp_path)
 
@@ -133,6 +155,11 @@ def test_executor_edit_file_requires_replace_all_for_multiple_matches(tmp_path):
 
 
 def test_executor_edit_file_can_replace_all_matches(tmp_path):
+    _write_agent_override(
+        tmp_path,
+        "implementer",
+        "  inherit: false\n  default_mode: workspace_write\n  allowed_tools:\n    - edit_file\n",
+    )
     (tmp_path / "module.py").write_text("x\nx\n", encoding="utf-8")
     executor = ToolExecutor(agent_id="implementer", workspace=tmp_path)
 
@@ -193,6 +220,11 @@ def test_executor_rejects_invalid_enum_value(tmp_path):
 
 
 def test_executor_rejects_invalid_uri_format(tmp_path):
+    _write_agent_override(
+        tmp_path,
+        "reviewer",
+        "  inherit: false\n  default_mode: read_only\n  allowed_tools:\n    - WebFetch\n",
+    )
     executor = ToolExecutor(agent_id="reviewer", workspace=tmp_path)
 
     with pytest.raises(ToolValidationError, match="url must be a valid URI"):
@@ -367,6 +399,11 @@ def test_executor_project_hook_file_can_append_post_hook(tmp_path):
 
 
 def test_executor_web_fetch_returns_text_content(tmp_path, monkeypatch):
+    _write_agent_override(
+        tmp_path,
+        "reviewer",
+        "  inherit: false\n  default_mode: read_only\n  allowed_tools:\n    - WebFetch\n",
+    )
     executor = ToolExecutor(agent_id="reviewer", workspace=tmp_path)
 
     class FakeResponse:
