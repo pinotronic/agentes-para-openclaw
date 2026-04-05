@@ -60,6 +60,7 @@ def _contains_nested_segment(path: str) -> bool:
 
 
 PIPELINE_AGENT_IDS = {
+    "planner": "planner_diff",
     "implementer": "implementer_diff",
     "test_writer": "test_writer_diff",
     "diagnoser": "diagnoser_diff",
@@ -354,6 +355,7 @@ def build_reviewer_task(
     redblue_review: dict[str, str] | None,
     redblue_autofix: dict[str, str] | None,
     changed_paths: list[str] | None = None,
+    orphan_new_files: list[str] | None = None,
 ) -> str:
     """Build reviewer task text with structured findings contract."""
     review_task = (
@@ -367,6 +369,12 @@ def build_reviewer_task(
             "\nChanged paths under review:\n"
             + "\n".join(f"- {path}" for path in changed_paths)
             + "\n"
+        )
+    if orphan_new_files:
+        review_task += (
+            "\nPotential orphan new source files detected before review:\n"
+            + "\n".join(f"- {path}" for path in orphan_new_files)
+            + "\nTreat these as likely findings unless the diff proves they are intentionally referenced.\n"
         )
     if redblue_review:
         review_task += (
@@ -706,10 +714,11 @@ def main() -> int:
         # 1) Plan
         log.info("Running planner...")
         mc.event("agent_start", {"agent": "planner"})
-        plan = run_agent("planner", args.task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
+        planner_agent = resolve_pipeline_agent_id("planner")
+        plan = run_agent(planner_agent, args.task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         print("\n== Planner output ==")
         print(plan)
-        stop_ollama_model(get_agent_model("planner", workspace=project))
+        stop_ollama_model(get_agent_model(planner_agent, workspace=project))
         mc.event("agent_stop", {"agent": "planner"})
 
         # 2) Write tests (diff)
@@ -842,7 +851,12 @@ def main() -> int:
     log.info("Running reviewer...")
     mc.event("agent_start", {"agent": "reviewer"})
     print("\n== Reviewer ==")
-    rev_task = build_reviewer_task(redblue_review=redblue_review, redblue_autofix=redblue_autofix, changed_paths=_changed_paths(project))
+    rev_task = build_reviewer_task(
+        redblue_review=redblue_review,
+        redblue_autofix=redblue_autofix,
+        changed_paths=_changed_paths(project),
+        orphan_new_files=find_orphan_new_source_files(project),
+    )
     review = run_agent("reviewer", rev_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
     print(review)
     stop_ollama_model(get_agent_model("reviewer", workspace=project))

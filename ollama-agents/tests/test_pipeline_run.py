@@ -152,12 +152,15 @@ def test_build_reviewer_task_includes_structured_contract_and_context():
         redblue_review={"red": "red text", "blue": "blue text", "diff": "diff text"},
         redblue_autofix={"blockers": "BLOCKER: fix auth", "diff": "patch"},
         changed_paths=["src/app.py", "tests/test_app.py"],
+        orphan_new_files=["src/orphan.py"],
     )
 
     assert "<REVIEW_FINDINGS>" in result
     assert '"severity":"BLOCKER|IMPORTANT|NICE"' in result
     assert "Changed paths under review:" in result
     assert "- src/app.py" in result
+    assert "Potential orphan new source files detected before review:" in result
+    assert "- src/orphan.py" in result
     assert "RED TEAM:\nred text" in result
     assert "BLUE TEAM:\nblue text" in result
     assert "AUTOFIX BLOCKERS:\nBLOCKER: fix auth" in result
@@ -197,10 +200,11 @@ def test_build_diagnoser_task_includes_logs_and_changed_paths():
 
 
 def test_resolve_pipeline_agent_id_maps_diff_agents():
+    assert pipeline_run.resolve_pipeline_agent_id("planner") == "planner_diff"
     assert pipeline_run.resolve_pipeline_agent_id("implementer") == "implementer_diff"
     assert pipeline_run.resolve_pipeline_agent_id("test_writer") == "test_writer_diff"
     assert pipeline_run.resolve_pipeline_agent_id("diagnoser") == "diagnoser_diff"
-    assert pipeline_run.resolve_pipeline_agent_id("planner") == "planner"
+    assert pipeline_run.resolve_pipeline_agent_id("reviewer") == "reviewer"
 
 
 def test_validate_project_changes_rejects_backup_suffix(tmp_path, monkeypatch):
