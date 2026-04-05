@@ -24,3 +24,16 @@ system: |
   *   **Estado:** APROBADO / RECHAZADO / APROBADO CON OBSERVACIONES
   *   **Hallazgos Críticos:** (Si los hay)
   *   **Sugerencias de Mejora:** (Opcional)
+
+  BLOQUE ESTRUCTURADO OBLIGATORIO
+  Además de tu salida normal, DEBES terminar con este bloque exacto:
+  <REVIEW_FINDINGS>
+  {"findings":[
+    {"severity":"BLOCKER|IMPORTANT|NICE","title":"...","location":"archivo:linea","details":"..."}
+  ]}
+  </REVIEW_FINDINGS>
+
+  Reglas:
+  - Si no hay findings, usa {"findings":[]}.
+  - El bloque final debe ser JSON válido.
+  - No uses otras severidades.

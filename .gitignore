@@ -16,7 +16,7 @@ build/
 .DS_Store
 
 # Workspace folders outside OpenClaw core
-agentes-para-openclaw/
+
 avatar/
 cajera-avatar-web/
 projects/

@@ -111,12 +111,29 @@ class MissionControl:
     def set_status(self, status: str, **extra: Any) -> None:
         if not self.enabled:
             return
-        base = {}
-        try:
-            base = json.loads(self.summary_path.read_text(encoding="utf-8"))
-        except Exception:
-            base = {"run_id": self.run_id}
+        base = self.read_summary()
         base.update({"status": status, **extra})
+        self.write_summary(base)
+
+    def read_summary(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"run_id": self.run_id}
+        try:
+            return json.loads(self.summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {"run_id": self.run_id}
+
+    def merge_summary(self, patch: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        base = self.read_summary()
+        for key, value in patch.items():
+            if isinstance(value, dict) and isinstance(base.get(key), dict):
+                merged = dict(base[key])
+                merged.update(value)
+                base[key] = merged
+            else:
+                base[key] = value
         self.write_summary(base)
 
     def finish_ok(self) -> None:

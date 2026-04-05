@@ -37,6 +37,11 @@ Las habilidades se comparten. Tu configuración es tuya. Mantenerlas separadas t
 
 ---
 
+## Trabajo
+
+- **Carpeta de trabajo:** `/media/administrador/IA2/compartida/` (SIEMPRE usar esta, no `~/.openclaw/workspace/` para proyectos)
+- Cuando ejecutes comandos con `exec`, usar `workdir=/media/administrador/IA2/compartida/` por defecto
+
 Agrega lo que te ayude a realizar tu trabajo. Esta es tu hoja de referencia.
 
 ## MiniMax TTS (Text-to-Speech)

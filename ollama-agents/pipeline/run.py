@@ -15,12 +15,14 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 from adapters import ALL_ADAPTERS
+from run_redblue import run_blue_team, run_red_team
 from patch_apply import git_apply
 from mission_control import MissionControl
 
@@ -40,6 +42,123 @@ def _changed_paths(project: Path) -> list[str]:
             path = path[1:-1]
         paths.append(path)
     return paths
+
+
+def _current_diff(project: Path) -> str:
+    """Return the current unstaged/staged diff for the workspace."""
+    p = sh(["git", "diff", "--no-ext-diff", "HEAD", "--"], cwd=project)
+    if p.returncode != 0:
+        return ""
+    return p.stdout.strip()
+
+
+def extract_blocker_findings(*texts: str) -> str:
+    """Extract blocker-focused lines from review outputs.
+
+    Conservative heuristic: only keep lines containing BLOCKER and nearby non-empty
+    context until the next blank line.
+    """
+    structured = parse_structured_review_findings(*texts)
+    if structured:
+        blocks: list[str] = []
+        for finding in structured:
+            if finding["severity"] != "BLOCKER":
+                continue
+            lines = [f"BLOCKER: {finding['title']}" if finding["title"] else "BLOCKER"]
+            if finding["location"]:
+                lines.append(f"Location: {finding['location']}")
+            if finding["details"]:
+                lines.append(finding["details"])
+            blocks.append("\n".join(lines).strip())
+        if blocks:
+            return "\n\n".join(blocks).strip()
+
+    findings: list[str] = []
+    for text in texts:
+        if not text:
+            continue
+        lines = text.splitlines()
+        capture = False
+        for line in lines:
+            if "BLOCKER" in line.upper():
+                capture = True
+                findings.append(line)
+                continue
+            if capture:
+                if not line.strip():
+                    capture = False
+                    continue
+                findings.append(line)
+    return "\n".join(findings).strip()
+
+
+def run_redblue_stage(project: Path, *, plan: str, enabled: bool) -> dict[str, str] | None:
+    """Run optional red/blue review on the current diff.
+
+    Returns a dict with red/blue outputs when the stage runs, else None.
+    """
+    if not enabled:
+        return None
+
+    current_diff = _current_diff(project)
+    if not current_diff:
+        log.info("Skipping red/blue stage because there is no diff to review")
+        return None
+
+    log.info("Running optional red/blue review stage")
+    red_output = run_red_team(current_diff, plan, workspace=project)
+    stop_ollama_model(get_agent_model("code_critic", workspace=project))
+    blue_output = run_blue_team(red_output, current_diff, plan, workspace=project)
+    stop_ollama_model(get_agent_model("defender", workspace=project))
+    return {"red": red_output, "blue": blue_output, "diff": current_diff}
+
+
+def run_redblue_autofix_stage(
+    project: Path,
+    *,
+    adapter_id: str,
+    context: str,
+    task: str,
+    plan: str,
+    redblue_review: dict[str, str] | None,
+    rag: str | None,
+    rag_k: int,
+    enabled: bool,
+) -> dict[str, str] | None:
+    """Apply one implementer pass from red/blue BLOCKER findings."""
+    if not enabled or not redblue_review:
+        return None
+
+    blockers = extract_blocker_findings(redblue_review.get("red", ""), redblue_review.get("blue", ""))
+    if not blockers:
+        log.info("Skipping red/blue autofix because no BLOCKER findings were detected")
+        return None
+
+    log.info("Running implementer autofix pass from red/blue BLOCKER findings")
+    impl_task = (
+        "Fix only the BLOCKER findings below with minimal changes. "
+        "Output ONLY a unified diff patch applicable with git apply.\n\n"
+        f"TASK: {task}\n\n"
+        f"PLAN:\n{plan}\n\n"
+        f"CURRENT DIFF UNDER REVIEW:\n{redblue_review.get('diff', '')}\n\n"
+        f"BLOCKER FINDINGS:\n{blockers}\n"
+    )
+    impl_diff = run_agent("implementer", impl_task, context=context, workspace=project, rag=rag, rag_k=rag_k)
+    ok, message = git_apply(project, impl_diff)
+    if not ok:
+        raise SystemExit(f"Failed to apply red/blue autofix diff: {message}")
+
+    okv, why = validate_project_changes(project, adapter_id=adapter_id)
+    if not okv:
+        sh(["git", "reset", "--hard"], cwd=project)
+        sh(["git", "clean", "-fd"], cwd=project)
+        raise SystemExit(
+            "Safety guardrail triggered after red/blue autofix diff. "
+            f"{why}. Reverted changes; adjust prompts/adapter rules."
+        )
+
+    stop_ollama_model(get_agent_model("implementer", workspace=project))
+    return {"blockers": blockers, "diff": impl_diff}
 
 
 def validate_project_changes(project: Path, *, adapter_id: str) -> tuple[bool, str]:
@@ -78,7 +197,84 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+OLLAMA_AGENTS_ROOT = REPO_ROOT / "ollama-agents"
+if str(OLLAMA_AGENTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(OLLAMA_AGENTS_ROOT))
+
+from discovery import resolve_agent_definition
+from agents.manifest import get_agent_status, manifest_summary
+
 RUNNER = REPO_ROOT / "ollama-agents" / "runner" / "ollama_agent.py"
+STRUCTURED_FINDINGS_SPEC = """
+Además de tu salida normal, DEBES terminar con este bloque exacto:
+<REVIEW_FINDINGS>
+{"findings":[
+  {"severity":"BLOCKER|IMPORTANT|NICE","title":"...","location":"archivo:linea","details":"..."}
+]}
+</REVIEW_FINDINGS>
+
+Reglas:
+- Si no hay findings, usa {"findings":[]}.
+- El bloque final debe ser JSON válido.
+- No uses otras severidades.
+""".strip()
+
+
+def build_reviewer_task(
+    *,
+    redblue_review: dict[str, str] | None,
+    redblue_autofix: dict[str, str] | None,
+) -> str:
+    """Build reviewer task text with structured findings contract."""
+    review_task = (
+        "Review the current changes for quality/security/testability.\n\n"
+        "Provide BLOCKER/IMPORTANT/NICE issues.\n\n"
+        f"{STRUCTURED_FINDINGS_SPEC}\n"
+    )
+    if redblue_review:
+        review_task += (
+            "\nConsider these prior red/blue findings as additional review context.\n\n"
+            f"RED TEAM:\n{redblue_review['red']}\n\n"
+            f"BLUE TEAM:\n{redblue_review['blue']}\n"
+        )
+    if redblue_autofix:
+        review_task += (
+            "\nAn implementer autofix pass was run for BLOCKER findings. "
+            "Re-review whether those blockers were actually resolved.\n\n"
+            f"AUTOFIX BLOCKERS:\n{redblue_autofix['blockers']}\n"
+        )
+    return review_task
+REVIEW_FINDINGS_RE = re.compile(r"<REVIEW_FINDINGS>\s*(.*?)\s*</REVIEW_FINDINGS>", re.DOTALL)
+
+
+def parse_structured_review_findings(*texts: str) -> list[dict[str, str]]:
+    """Parse structured review findings emitted by review agents."""
+    findings: list[dict[str, str]] = []
+    for text in texts:
+        if not text:
+            continue
+        for match in REVIEW_FINDINGS_RE.finditer(text):
+            payload = match.group(1).strip()
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            raw_findings = decoded.get("findings", [])
+            if not isinstance(raw_findings, list):
+                continue
+            for item in raw_findings:
+                if not isinstance(item, dict):
+                    continue
+                severity = str(item.get("severity", "")).upper().strip()
+                if severity not in {"BLOCKER", "IMPORTANT", "NICE"}:
+                    continue
+                findings.append({
+                    "severity": severity,
+                    "title": str(item.get("title", "")).strip(),
+                    "details": str(item.get("details", "")).strip(),
+                    "location": str(item.get("location", "")).strip(),
+                })
+    return findings
 
 
 def sh(cmd: list[str], cwd: Path, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
@@ -99,11 +295,12 @@ def sh(cmd: list[str], cwd: Path, timeout: int | None = None) -> subprocess.Comp
         return result
 
 
-def get_agent_model(agent_id: str) -> str:
+def get_agent_model(agent_id: str, workspace: Path | None = None) -> str:
     """Reads the agent's YAML file to get its model."""
-    agent_profile_path = REPO_ROOT / "ollama-agents" / "agents" / f"{agent_id}.yaml"
-    if not agent_profile_path.exists():
-        raise FileNotFoundError(f"Agent profile not found: {agent_profile_path}")
+    definition = resolve_agent_definition(agent_id, workspace, OLLAMA_AGENTS_ROOT)
+    if definition is None:
+        raise FileNotFoundError(f"Agent profile not found: {agent_id}")
+    agent_profile_path = definition.path
     
     # We need pyyaml to parse the yaml file
     try:
@@ -147,17 +344,59 @@ def pick_adapter(project: Path):
     return None
 
 
-def run_agent(agent: str, task: str, *, context: str, rag: str | None = None, rag_k: int = 6) -> str:
+def run_agent(
+    agent: str,
+    task: str,
+    *,
+    context: str,
+    workspace: Path | None = None,
+    rag: str | None = None,
+    rag_k: int = 6,
+    mission_control: MissionControl | None = None,
+) -> str:
     """Run an agent with timeout and retry logic."""
     cmd = [sys.executable, str(RUNNER), "--agent", agent, "--input", task, "--context", context]
+    if workspace is not None:
+        cmd += ["--workspace", str(workspace)]
     if rag:
         cmd += ["--rag", rag, "--rag-k", str(rag_k)]
 
     log.info(f"Running agent: {agent}")
     p = sh(cmd, cwd=REPO_ROOT, timeout=AGENT_TIMEOUT)
+    _record_agent_manifest(mission_control, agent, workspace)
     if p.returncode != 0:
         raise SystemExit(f"Agent {agent} failed:\n{p.stderr}")
     return p.stdout
+
+
+def _record_agent_manifest(
+    mission_control: MissionControl | None,
+    agent: str,
+    workspace: Path | None,
+) -> dict[str, object] | None:
+    if mission_control is None or workspace is None:
+        return None
+
+    manifest = get_agent_status(agent, workspace)
+    if manifest is None:
+        return None
+
+    payload = manifest_summary(manifest)
+    mission_control.event("agent_manifest", payload)
+    mission_control.merge_summary(
+        {
+            "agents": {agent: payload},
+            "agent_outputs": {
+                agent: {
+                    "run_id": payload["run_id"],
+                    "output_file": payload["output_file"],
+                    "status": payload["status"],
+                    "preview": payload.get("output_preview", ""),
+                }
+            },
+        }
+    )
+    return payload
 
 
 def save_state(project: Path, state: dict) -> None:
@@ -200,6 +439,8 @@ def main() -> int:
     ap.add_argument("--max-iters", type=int, default=DEFAULT_MAX_ITERS)
     ap.add_argument("--rag", default="", help="optional RAG query to inject")
     ap.add_argument("--rag-k", type=int, default=DEFAULT_RAG_K)
+    ap.add_argument("--redblue", action="store_true", help="run optional red/blue review stage before reviewer")
+    ap.add_argument("--redblue-autofix", action="store_true", help="run one implementer autofix pass for red/blue BLOCKER findings")
     ap.add_argument("--resume", action="store_true", help="resume from saved state")
     ap.add_argument("--verbose", "-v", action="store_true", help="enable debug logging")
     args = ap.parse_args()
@@ -269,10 +510,10 @@ def main() -> int:
         # 1) Plan
         log.info("Running planner...")
         mc.event("agent_start", {"agent": "planner"})
-        plan = run_agent("planner", args.task, context=context, rag=rag, rag_k=args.rag_k)
+        plan = run_agent("planner", args.task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
         print("\n== Planner output ==")
         print(plan)
-        stop_ollama_model(get_agent_model("planner"))
+        stop_ollama_model(get_agent_model("planner", workspace=project))
         mc.event("agent_stop", {"agent": "planner"})
 
         # 2) Write tests (diff)
@@ -283,7 +524,7 @@ def main() -> int:
             "Write tests FIRST for this task. Output ONLY a unified diff patch applicable with git apply.\n\n"
             f"TASK: {args.task}\n\nPLAN:\n{plan}\n"
         )
-        test_diff = run_agent("test_writer", test_task, context=context, rag=rag, rag_k=args.rag_k)
+        test_diff = run_agent("test_writer", test_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
         ok, msg = git_apply(project, test_diff)
         if not ok:
             raise SystemExit(f"Failed to apply test diff: {msg}")
@@ -298,7 +539,7 @@ def main() -> int:
                 f"{why}. Reverted changes; adjust prompts/adapter rules."
             )
 
-        stop_ollama_model(get_agent_model("test_writer"))
+        stop_ollama_model(get_agent_model("test_writer", workspace=project))
         mc.event("agent_stop", {"agent": "test_writer"})
 
         # Save initial state
@@ -329,10 +570,10 @@ def main() -> int:
             f"LOGS:\n{logs}\n"
         )
         mc.event("agent_start", {"agent": "diagnoser", "iteration": i})
-        diag = run_agent("diagnoser", diag_task, context=context, rag=rag, rag_k=args.rag_k)
+        diag = run_agent("diagnoser", diag_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
         print("\n== Diagnoser ==")
         print(diag)
-        stop_ollama_model(get_agent_model("diagnoser"))
+        stop_ollama_model(get_agent_model("diagnoser", workspace=project))
         mc.event("agent_stop", {"agent": "diagnoser", "iteration": i})
 
         # 4) Implement fix (diff)
@@ -342,7 +583,7 @@ def main() -> int:
             "Fix the failing gates with minimal changes. Output ONLY a unified diff patch applicable with git apply.\n\n"
             f"TASK: {args.task}\n\nPLAN:\n{plan}\n\nDIAGNOSIS:\n{diag}\n\nLOGS:\n{logs}\n"
         )
-        impl_diff = run_agent("implementer", impl_task, context=context, rag=rag, rag_k=args.rag_k)
+        impl_diff = run_agent("implementer", impl_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
         ok2, msg2 = git_apply(project, impl_diff)
         if not ok2:
             raise SystemExit(f"Failed to apply implementer diff: {msg2}")
@@ -356,7 +597,7 @@ def main() -> int:
                 f"{why2}. Reverted changes; adjust prompts/adapter rules."
             )
 
-        stop_ollama_model(get_agent_model("implementer"))
+        stop_ollama_model(get_agent_model("implementer", workspace=project))
         mc.event("agent_stop", {"agent": "implementer", "iteration": i})
 
         # Save state after implementation
@@ -366,17 +607,49 @@ def main() -> int:
         log.warning("Reached max iterations without green gates")
         print("\nReached max iterations without green gates.")
 
+    redblue_review = run_redblue_stage(project, plan=plan, enabled=args.redblue)
+    if redblue_review:
+        print("\n== Red Team / Blue Team ==")
+        print("\n[RED]\n")
+        print(redblue_review["red"])
+        print("\n[BLUE]\n")
+        print(redblue_review["blue"])
+        mc.event("redblue", {"enabled": True, "diff_bytes": len(redblue_review["diff"])})
+    else:
+        mc.event("redblue", {"enabled": False})
+
+    redblue_autofix = run_redblue_autofix_stage(
+        project,
+        adapter_id=adapter.id,
+        context=context,
+        task=args.task,
+        plan=plan,
+        redblue_review=redblue_review,
+        rag=rag,
+        rag_k=args.rag_k,
+        enabled=args.redblue_autofix,
+    )
+    if redblue_autofix:
+        print("\n== Red/Blue Autofix ==")
+        print(redblue_autofix["blockers"])
+        mc.event("redblue_autofix", {"enabled": True, "blocker_bytes": len(redblue_autofix["blockers"])})
+        autofix_ok, autofix_logs = run_gates(project, gate_cmds)
+        print("\n== Gates After Red/Blue Autofix ==")
+        print("All gates passed ✅" if autofix_ok else "Gates failed ❌")
+        if not autofix_ok:
+            print(autofix_logs)
+        mc.event("gates_after_redblue_autofix", {"ok": autofix_ok})
+    else:
+        mc.event("redblue_autofix", {"enabled": False})
+
     # Reviewer summary (optional)
     log.info("Running reviewer...")
     mc.event("agent_start", {"agent": "reviewer"})
     print("\n== Reviewer ==")
-    rev_task = (
-        "Review the current changes for quality/security/testability.\n\n"
-        "Provide BLOCKER/IMPORTANT/NICE issues.\n"
-    )
-    review = run_agent("reviewer", rev_task, context=context, rag=rag, rag_k=args.rag_k)
+    rev_task = build_reviewer_task(redblue_review=redblue_review, redblue_autofix=redblue_autofix)
+    review = run_agent("reviewer", rev_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc)
     print(review)
-    stop_ollama_model(get_agent_model("reviewer"))
+    stop_ollama_model(get_agent_model("reviewer", workspace=project))
     mc.event("agent_stop", {"agent": "reviewer"})
 
     # Show git status summary

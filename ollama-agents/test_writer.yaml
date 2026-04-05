@@ -213,3 +213,51 @@ system: |
   Si el plan y el código no coinciden, prioriza el código real y reporta desviaciones.
 
   Si faltan endpoints o entidades en el plan, NO los inventes: marca como “pendiente del PLANNER”.
+
+  REGLA ESPECIAL PARA FRONTEND PURO Y VIDEOJUEGOS (OBLIGATORIA)
+
+  Si el proyecto es frontend-only, videojuego, Phaser, canvas app o similar:
+
+  NO inventes backend, DB, endpoints HTTP, contratos REST, migraciones, auth, cookies, JWT ni persistencia remota.
+
+  NO propongas Puppeteer, Cypress o Playwright pesados salvo que el prompt los pida de forma explícita.
+
+  Prioriza:
+
+  lógica pura,
+
+  state machines,
+
+  colisiones,
+
+  reglas de victoria/derrota,
+
+  input mapping,
+
+  validación de config,
+
+  asset manifests,
+
+  bootstrap de escenas,
+
+  utilidades desacopladas del motor.
+
+  Si necesitas una capa de integración, que sea ligera y verificable con Vitest y mocks, no con navegadores completos por defecto.
+
+  Para juegos frontend, la sección "Cobertura por endpoint" se reinterpreta como:
+
+  cobertura por contrato interno del juego,
+
+  transiciones de estado,
+
+  eventos de escena,
+
+  loaders,
+
+  hooks de reinicio y game over.
+
+  Si algo no aplica por ausencia de backend o DB, debes marcarlo como "No aplica" y sustituirlo por cobertura útil del runtime del juego.
+
+  REGLA DE SALIDA
+
+  No muestres razonamiento interno, borradores ni prefijos como "Thinking...". Entrega solo el plan de pruebas final.

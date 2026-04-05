@@ -16,6 +16,21 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+def _resolve_safe_path(project: Path, path_str: str) -> Path:
+    """Resolve a relative path and ensure it stays inside the project root."""
+    candidate = Path(path_str)
+    if candidate.is_absolute():
+        raise ValueError(f"Absolute paths are not allowed: {path_str}")
+
+    full_path = (project / candidate).resolve(strict=False)
+    project_root = project.resolve(strict=False)
+    try:
+        full_path.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError(f"Path escapes project root: {path_str}") from exc
+    return full_path
+
+
 def extract_unified_diff(text: str) -> str:
     """Extract unified diff from model output.
 
@@ -91,48 +106,62 @@ def apply_diff_manually(project: Path, diff_text: str) -> tuple[bool, str]:
     current_file_path: Path | None = None
     file_content_lines: list[str] = []
     in_hunk = False
+    files_written = 0
+
+    def flush_current_file() -> tuple[bool, str]:
+        nonlocal file_content_lines, files_written
+        if current_file_path is None:
+            return True, "OK"
+        if not file_content_lines:
+            return False, f"No file content collected for {current_file_path}"
+
+        try:
+            full_path = _resolve_safe_path(project, str(current_file_path))
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text("\n".join(file_content_lines), encoding="utf-8")
+            log.debug(f"Manually wrote: {full_path}")
+            files_written += 1
+            file_content_lines = []
+            return True, "OK"
+        except Exception as e:
+            return False, f"Error writing file {current_file_path}: {e}"
 
     for line in lines:
         if line.startswith("--- "):
             # Start of a new file diff, but we are only interested in '+++' for the new path
             continue
         elif line.startswith("+++ "):
-            if current_file_path and file_content_lines:
-                # Save previous file
-                try:
-                    full_path = project / current_file_path
-                    full_path.parent.mkdir(parents=True, exist_ok=True)
-                    full_path.write_text("\n".join(file_content_lines))
-                    log.debug(f"Manually wrote: {full_path}")
-                except Exception as e:
-                    return False, f"Error writing file {current_file_path}: {e}"
-                file_content_lines = [] # Reset for next file
+            ok, message = flush_current_file()
+            if not ok:
+                return False, message
             
             # Extract new file path, remove 'b/' prefix
+            if not line.startswith("+++ b/"):
+                return False, f"Unsupported diff target header: {line}"
             new_file_str = line[len("+++ b/"):]
-            current_file_path = Path(new_file_str).relative_to(project.resolve()) if project.resolve() in Path(new_file_str).parents else Path(new_file_str) # Handle relative paths properly
+            current_file_path = Path(new_file_str)
             in_hunk = False
-        elif line.startswith("@@ -0,0"): # Start of a new file hunk
+        elif line.startswith("@@"):
+            if not line.startswith("@@ -0,0"):
+                return False, "Manual patch application only supports new-file diffs"
             in_hunk = True
         elif in_hunk:
             if line.startswith("+"):
                 file_content_lines.append(line[1:])
-            # For manual application, we assume only new files (all '+' lines)
-            # If there were context or removal lines, this simple parser would fail.
-            # But the LLM is expected to create new files from scratch for TDD.
+            elif line.startswith("\\"):
+                continue
+            else:
+                return False, "Manual patch application only supports added lines for new files"
         else:
             # Lines outside of recognized diff headers or hunks for new files are ignored
             continue
 
     # Save the last file
-    if current_file_path and file_content_lines:
-        try:
-            full_path = project / current_file_path
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text("\n".join(file_content_lines))
-            log.debug(f"Manually wrote: {full_path}")
-        except Exception as e:
-            return False, f"Error writing file {current_file_path}: {e}"
+    ok, message = flush_current_file()
+    if not ok:
+        return False, message
+    if files_written == 0:
+        return False, "Manual patch application found no supported file writes"
     
     log.info("Manual diff application completed successfully.")
     return True, "manually applied"

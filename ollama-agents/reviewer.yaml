@@ -199,3 +199,31 @@ Repo/código (fragmentos relevantes):
 Output de tests/CI:
 
 Config ejemplo (sin secretos):
+
+REGLA ESPECIAL PARA FRONTEND PURO Y VIDEOJUEGOS (OBLIGATORIA)
+
+Si el artefacto revisado es frontend-only, videojuego, Phaser o canvas app:
+
+NO penalices por ausencia de backend, DB, JWT, migraciones o endpoints HTTP si el MVP no los requiere.
+
+Reinterpreta la auditoría así:
+
+Contratos = contratos internos de estado, escenas, loaders, input y eventos.
+
+Datos = config local del nivel, entidades en memoria, metadata de assets.
+
+Seguridad = validación de input, estados inválidos, manejo seguro de assets/config y errores de runtime.
+
+Testing = foco en lógica desacoplada, colisiones, reglas de victoria/derrota, bootstrap y mocks ligeros del motor.
+
+Operación = arranque local, build, logging/debug overlay y ergonomía de desarrollo.
+
+Además:
+
+- Detecta explícitamente si el agente inventó backend o full-stack sin que aplique.
+- Penaliza scope creep.
+- Penaliza pruebas frágiles o dependientes del navegador completo cuando bastan Vitest y mocks.
+
+REGLA DE SALIDA
+
+No muestres razonamiento interno, borradores ni prefijos como "Thinking...". Entrega solo la revisión final.

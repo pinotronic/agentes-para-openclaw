@@ -13,14 +13,78 @@ Aquí se almacenan las decisiones importantes, el contexto y las lecciones apren
 - Emoji firma: 🦖
 
 ## Principios operativos
-- Los agentes (`planner`, `test_writer`, `implementer`, `diagnoser`, `reviewer`, `debater`) son mis herramientas indispensables para el desarrollo de software.
+- Los agentes (`planner`, `test_writer`, `implementer`, `diagnoser`, `reviewer`, `debater`, `code_critic`, `defender`) son mis herramientas indispensables para el desarrollo de software.
+- **Flujo Red Team / Blue Team:** CODE_CRITIC (crítica) → DEFENDER (soluciones) → IMPLEMENTER (aplica)
 - **Ubicación de Agentes:** `~/.openclaw/workspace/ollama-agents/`
 - **Orquestador:** `~/.openclaw/workspace/ollama-agents/pipeline/run.py`
+- **Pipeline Red/Blue:** `~/.openclaw/workspace/ollama-agents/pipeline/run_redblue.py`
 - Siempre debo recordar cómo utilizar y mejorar estas herramientas.
+
+## Red Team / Blue Team (Seguridad y Calidad de Código)
+
+Basado en **BlueCodeAgent** de Microsoft Research. Este flujo rodea al IMPLEMENTER con revisión defensiva.
+
+### Agentes
+
+| Agente | Rol | ID YAML | Propósito |
+|--------|-----|---------|-----------|
+| `code_critic` | 🔴 Red | `code_critic.yaml` | Hacker ético: busca fallos, edge cases, vulnerabilidades |
+| `defender` | 🔵 Blue | `defender.yaml` | Ingeniero defensivo: propone soluciones concretas |
+
+### Categorías de crítica (CODE_CRITIC)
+
+| Prioridad | Categoría | Ejemplos |
+|-----------|-----------|----------|
+| **P0** | Seguridad | SQL injection, XSS, auth bypass, hardcoded secrets |
+| **P1** | Edge Cases | null, vacío, valores extremos, división por cero |
+| **P2** | Lógica | Off-by-one, condiciones incorrectas, lógica invertida |
+| **P3** | Performance | N+1 queries, memory leaks, loops costosos |
+| **P4** | Arquitectura | God classes, acoplamiento tight, SRP violado |
+
+### Flujo de uso
+
+```
+1. IMPLEMENTER escribe código
+2. CODE_CRITIC lo critica (P0→P4)
+3. DEFENDER propone soluciones exactas
+4. IMPLEMENTER aplica los fixes
+```
+
+### Ejecución
+
+```bash
+cd ~/.openclaw/workspace/ollama-agents
+source .venv/bin/activate
+python pipeline/run_redblue.py --code "código" --plan "descripción del proyecto"
+```
+
+### Cuándo usar
+
+- **Siempre antes de commit:** Después de implementar código significativo
+- **En Fase C del pipeline:** Después de IMPLEMENTER, antes de DIAGNOSER
+- **Cuando hay bugs inexplicables:** El CODE_CRITIC puede encontrar la causa raíz
+- **Antes de аудит final:** REVIEWER ya tiene menos P0 que encontrar
+
+### Output típico
+
+CODE_CRITIC entrega tabla con:
+- `#` (ID), `Tipo`, `Ubicación` (archivo:línea), `Descripción`, `Severidad`
+
+DEFENDER entrega para cada crítica:
+- Código exacto de la solución
+- Archivo a modificar
+- Tests a agregar
+- Verificación
+
+### Prueba real (2026-03-31)
+
+- Código revisado: `updateGridCalculations` de TiledCutter
+- Resultado: 15 críticas (3 P0 seguridad, 4 P1 edge cases, 4 P2 lógica, 2 P3 perf, 2 P4 arquitectura)
+- Fix aplicado y validado con build passing
 
 ## Flujo de Trabajo Crítico (Agentes - Orquestador)
 - **Rol de Rex:** Orquestador / Director de Agentes.
-- **Flujo General:** Requerimientos (Pinotronic) → Orquestador (`ollama-agents/pipeline/run.py`) → Ejecución Secuencial de Agentes Internos (Planner, Test Writer, Implementer, Diagnoser, Reviewer).
+- **Flujo General:** Requerimientos (Pinotronic) → Orquestador (`ollama-agents/pipeline/run.py`) → Ejecución Secuencial de Agentes Internos (Planner, Test Writer, Implementer, Code Critic, Defender, Diagnoser, Reviewer).
 - **Invocación de Agentes:** El script `run.py` es el orquestador principal y llama a los agentes internos en un orden predefinido (ej. `planner` primero). No se especifica un agente individual directamente a través de argumentos externos al `run.py`.
 - **Ciclo de Desarrollo TDD (Mandatorio):** Crear Test → Crear Código Mínimo → Probar Código → Si falla, Diagnosticar y Repetir el ciclo **hasta que el código pase los tests**.
 - **Doble Verificación:** Utilizar el agente `debater` para obtener un punto de vista alternativo y analizar soluciones.
@@ -40,6 +104,7 @@ Aquí se almacenan las decisiones importantes, el contexto y las lecciones apren
 
 ## Preferences
 - Tono directo, sin relleno.
+- **Carpeta de trabajo oficial:** `/media/administrador/IA2/compartida/` (NO usar `~/.openclaw/workspace/` para proyectos de usuario)
 
 ## Tooling / Agent Ops
 - **Mission Control (pipeline tracking):** se agregó tracking mínimo al pipeline `ollama-agents/pipeline/run.py`.
@@ -249,6 +314,9 @@ REVIEWER: audita el plan y marca P0/P1/P2.
 DEBATER: debate y propone mejoras priorizadas.
 Luego TEST_WRITER: crea matriz y tickets atómicos de tests.
 Luego IMPLEMENTER: implementa por tickets en TDD hasta tests verdes.
+CODE_CRITIC: revisa el código buscando fallos P0-P4 (Red Team).
+DEFENDER: propone soluciones concretas para cada crítica (Blue Team).
+IMPLEMENTER: aplica los fixes del DEFENDER.
 DIAGNOSER: entra solo si hay fallos.
 ```
 
