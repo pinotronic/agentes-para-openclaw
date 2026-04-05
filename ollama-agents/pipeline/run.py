@@ -279,6 +279,21 @@ def build_implementer_task(
         f"LOGS:\n{logs}\n\n"
         f"CANDIDATE PATHS:\n{path_block}\n"
     )
+
+
+def build_test_writer_task(*, task: str, plan: str) -> str:
+    """Build a constrained test-writer task for diff-first execution."""
+    return (
+        "Write tests FIRST for this task. Output ONLY a unified diff patch applicable with git apply.\n\n"
+        "Hard constraints:\n"
+        "- Modify only test files, fixtures, or test helpers.\n"
+        "- Do not change production code.\n"
+        "- Do not create parallel test trees or backup files.\n"
+        "- Use the repository's existing test structure and naming.\n"
+        "- Keep the patch minimal and directly tied to the requested behavior.\n\n"
+        f"TASK: {task}\n\n"
+        f"PLAN:\n{plan}\n"
+    )
 REVIEW_FINDINGS_RE = re.compile(r"<REVIEW_FINDINGS>\s*(.*?)\s*</REVIEW_FINDINGS>", re.DOTALL)
 
 
@@ -559,10 +574,7 @@ def main() -> int:
         log.info("Running test writer...")
         mc.event("agent_start", {"agent": "test_writer"})
         print("\n== Test writer (diff) ==")
-        test_task = (
-            "Write tests FIRST for this task. Output ONLY a unified diff patch applicable with git apply.\n\n"
-            f"TASK: {args.task}\n\nPLAN:\n{plan}\n"
-        )
+        test_task = build_test_writer_task(task=args.task, plan=plan)
         test_diff = run_agent("test_writer", test_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         ok, msg = git_apply(project, test_diff)
         if not ok:

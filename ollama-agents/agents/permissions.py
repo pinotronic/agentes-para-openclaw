@@ -388,13 +388,12 @@ def debater_policy() -> PermissionPolicy:
 
 
 def test_writer_policy() -> PermissionPolicy:
-    """Test Writer: read + write files (for test code)."""
+    """Test Writer: diff-first inspection only in the main pipeline."""
     return PermissionPolicy(
-        default_mode=PermissionMode.WORKSPACE_WRITE,
+        default_mode=PermissionMode.READ_ONLY,
         allowed_tools=frozenset({
-            "read", "read_file", "write", "write_file",
+            "read", "read_file",
             "glob", "glob_search", "grep", "grep_search",
-            "skill", "Skill",
         }),
     )
 

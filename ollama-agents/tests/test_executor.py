@@ -105,6 +105,11 @@ def test_executor_rejects_path_escape(tmp_path):
 
 
 def test_executor_write_file_creates_parent_dirs(tmp_path):
+    _write_agent_override(
+        tmp_path,
+        "test_writer",
+        "  inherit: false\n  default_mode: workspace_write\n  allowed_tools:\n    - write_file\n",
+    )
     executor = ToolExecutor(agent_id="test_writer", workspace=tmp_path)
 
     result = executor.execute(
@@ -115,6 +120,17 @@ def test_executor_write_file_creates_parent_dirs(tmp_path):
 
     assert result["ok"] is True
     assert (tmp_path / "tests" / "unit" / "new_test.py").read_text(encoding="utf-8") == "assert True\n"
+
+
+def test_executor_core_test_writer_rejects_write_file(tmp_path):
+    executor = ToolExecutor(agent_id="test_writer", workspace=tmp_path)
+
+    with pytest.raises(ToolPermissionError, match="not allowed"):
+        executor.execute(
+            parse_tool_call(
+                '<TOOL_CALL>{"tool":"write_file","arguments":{"path":"tests/unit/new_test.py","content":"assert True\\n"}}</TOOL_CALL>'
+            )
+        )
 
 
 def test_executor_edit_file_replaces_single_match(tmp_path):

@@ -164,6 +164,15 @@ def test_build_implementer_task_includes_candidate_paths_and_constraints():
     assert "- src/app.py" in result
 
 
+def test_build_test_writer_task_includes_test_only_constraints():
+    result = pipeline_run.build_test_writer_task(task="add collision tests", plan="plan")
+
+    assert "Write tests FIRST for this task" in result
+    assert "Modify only test files, fixtures, or test helpers." in result
+    assert "Do not change production code." in result
+    assert "PLAN:\nplan" in result
+
+
 def test_record_agent_manifest_updates_mission_control(tmp_path, monkeypatch):
     fake_mc = _FakeMissionControl()
     monkeypatch.setattr(
