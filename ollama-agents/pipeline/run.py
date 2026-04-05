@@ -44,6 +44,17 @@ def _changed_paths(project: Path) -> list[str]:
     return paths
 
 
+def _contains_nested_segment(path: str) -> bool:
+    parts = [part for part in Path(path).parts if part not in {".", ""}]
+    seen: set[str] = set()
+    for part in parts:
+        normalized = part.lower()
+        if normalized in seen:
+            return True
+        seen.add(normalized)
+    return False
+
+
 def _current_diff(project: Path) -> str:
     """Return the current unstaged/staged diff for the workspace."""
     p = sh(["git", "diff", "--no-ext-diff", "HEAD", "--"], cwd=project)
@@ -167,6 +178,33 @@ def validate_project_changes(project: Path, *, adapter_id: str) -> tuple[bool, s
     paths = _changed_paths(project)
     if not paths:
         return True, "no changes"
+
+    disallowed_suffixes = (
+        ".bak",
+        ".tmp",
+        ".orig",
+        ".rej",
+        ".disabled",
+        ".old",
+    )
+    disallowed_names = {
+        ".ds_store",
+        ".agent_store",
+        "__pycache__",
+    }
+
+    for p in paths:
+        path_obj = Path(p)
+        lowered = p.lower()
+
+        if any(part.lower() == ".git" for part in path_obj.parts):
+            return False, f"Disallowed change path: {p} (.git internals)"
+        if any(part.lower() in disallowed_names for part in path_obj.parts):
+            return False, f"Disallowed generated or transient path: {p}"
+        if lowered.endswith(disallowed_suffixes):
+            return False, f"Disallowed backup or temp file: {p}"
+        if _contains_nested_segment(p):
+            return False, f"Suspicious duplicated path segment: {p}"
 
     # Hard rules for this monorepo (extend as needed)
     if adapter_id == "fastapi-react-monorepo":
@@ -293,6 +331,20 @@ def build_test_writer_task(*, task: str, plan: str) -> str:
         "- Keep the patch minimal and directly tied to the requested behavior.\n\n"
         f"TASK: {task}\n\n"
         f"PLAN:\n{plan}\n"
+    )
+
+
+def build_diagnoser_task(*, logs: str, changed_paths: list[str] | None = None) -> str:
+    """Build a constrained diagnoser task with local evidence only."""
+    path_block = "\n".join(f"- {path}" for path in (changed_paths or [])) or "- none"
+    return (
+        "Diagnose the failing gates using only the evidence below.\n\n"
+        "Hard constraints:\n"
+        "- Do not propose broad rewrites when a local fix is more likely.\n"
+        "- Focus on the changed paths first.\n"
+        "- If evidence is insufficient, state the top hypotheses briefly instead of inventing certainty.\n\n"
+        f"FAILING LOGS:\n{logs}\n\n"
+        f"RECENT CHANGED PATHS:\n{path_block}\n"
     )
 REVIEW_FINDINGS_RE = re.compile(r"<REVIEW_FINDINGS>\s*(.*?)\s*</REVIEW_FINDINGS>", re.DOTALL)
 
@@ -616,10 +668,7 @@ def main() -> int:
         save_state(project, {"task": args.task, "plan": plan, "iteration": i, "phase": "diagnose"})
 
         # 3) Diagnose
-        diag_task = (
-            "You are given real command output (tests/lint/build). Diagnose and propose minimal fix.\n\n"
-            f"LOGS:\n{logs}\n"
-        )
+        diag_task = build_diagnoser_task(logs=logs, changed_paths=_changed_paths(project))
         mc.event("agent_start", {"agent": "diagnoser", "iteration": i})
         diag = run_agent("diagnoser", diag_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         print("\n== Diagnoser ==")

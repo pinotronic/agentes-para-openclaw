@@ -173,6 +173,42 @@ def test_build_test_writer_task_includes_test_only_constraints():
     assert "PLAN:\nplan" in result
 
 
+def test_build_diagnoser_task_includes_logs_and_changed_paths():
+    result = pipeline_run.build_diagnoser_task(logs="traceback", changed_paths=["src/app.py", "tests/test_app.py"])
+
+    assert "Diagnose the failing gates using only the evidence below." in result
+    assert "FAILING LOGS:\ntraceback" in result
+    assert "RECENT CHANGED PATHS:" in result
+    assert "- src/app.py" in result
+
+
+def test_validate_project_changes_rejects_backup_suffix(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_run, "_changed_paths", lambda project: ["src/app.py.bak"])
+
+    ok, why = pipeline_run.validate_project_changes(tmp_path, adapter_id="python-pytest")
+
+    assert ok is False
+    assert "backup or temp file" in why
+
+
+def test_validate_project_changes_rejects_nested_git_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_run, "_changed_paths", lambda project: ["nested/.git/config"])
+
+    ok, why = pipeline_run.validate_project_changes(tmp_path, adapter_id="python-pytest")
+
+    assert ok is False
+    assert ".git internals" in why
+
+
+def test_validate_project_changes_rejects_duplicate_path_segment(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_run, "_changed_paths", lambda project: ["src/components/components/App.tsx"])
+
+    ok, why = pipeline_run.validate_project_changes(tmp_path, adapter_id="python-pytest")
+
+    assert ok is False
+    assert "duplicated path segment" in why
+
+
 def test_record_agent_manifest_updates_mission_control(tmp_path, monkeypatch):
     fake_mc = _FakeMissionControl()
     monkeypatch.setattr(
