@@ -133,6 +133,20 @@ def test_run_redblue_autofix_stage_runs_implementer_for_blockers(tmp_path, monke
     assert result == {"blockers": "BLOCKER: fix auth\nDetails", "diff": "diff patch"}
 
 
+def test_find_orphan_new_source_files_flags_unreferenced_source_file(tmp_path, monkeypatch):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "new_feature.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    (src_dir / "existing.py").write_text("def keep():\n    return 2\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pipeline_run,
+        "_changed_entries",
+        lambda project: [("??", "src/new_feature.py"), (" M", "src/existing.py")],
+    )
+
+    assert pipeline_run.find_orphan_new_source_files(tmp_path) == ["src/new_feature.py"]
+
+
 def test_build_reviewer_task_includes_structured_contract_and_context():
     result = pipeline_run.build_reviewer_task(
         redblue_review={"red": "red text", "blue": "blue text", "diff": "diff text"},
@@ -182,6 +196,13 @@ def test_build_diagnoser_task_includes_logs_and_changed_paths():
     assert "- src/app.py" in result
 
 
+def test_resolve_pipeline_agent_id_maps_diff_agents():
+    assert pipeline_run.resolve_pipeline_agent_id("implementer") == "implementer_diff"
+    assert pipeline_run.resolve_pipeline_agent_id("test_writer") == "test_writer_diff"
+    assert pipeline_run.resolve_pipeline_agent_id("diagnoser") == "diagnoser_diff"
+    assert pipeline_run.resolve_pipeline_agent_id("planner") == "planner"
+
+
 def test_validate_project_changes_rejects_backup_suffix(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline_run, "_changed_paths", lambda project: ["src/app.py.bak"])
 
@@ -207,6 +228,30 @@ def test_validate_project_changes_rejects_duplicate_path_segment(tmp_path, monke
 
     assert ok is False
     assert "duplicated path segment" in why
+
+
+def test_find_orphan_new_source_files_allows_referenced_source_file(tmp_path, monkeypatch):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True)
+    (src_dir / "new_feature.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    (src_dir / "existing.py").write_text("from new_feature import run\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pipeline_run,
+        "_changed_entries",
+        lambda project: [("??", "src/new_feature.py"), (" M", "src/existing.py")],
+    )
+
+    assert pipeline_run.find_orphan_new_source_files(tmp_path) == []
+
+
+def test_validate_project_changes_rejects_orphan_new_source_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline_run, "_changed_entries", lambda project: [("??", "src/new_feature.py")])
+    monkeypatch.setattr(pipeline_run, "find_orphan_new_source_files", lambda project: ["src/new_feature.py"])
+
+    ok, why = pipeline_run.validate_project_changes(tmp_path, adapter_id="python-pytest")
+
+    assert ok is False
+    assert "Potential orphan new source files" in why
 
 
 def test_record_agent_manifest_updates_mission_control(tmp_path, monkeypatch):

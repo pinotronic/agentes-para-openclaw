@@ -1,0 +1,85 @@
+id: diagnoser_diff
+model: qwen3.5:9b
+purpose: "Diagnosticar fallos concretos con evidencia para el flujo diff-first"
+output_format: markdown
+tool_max_rounds: 8
+permissions:
+  inherit: false
+  default_mode: danger_full_access
+  allowed_tools:
+    - read_file
+    - glob_search
+    - grep_search
+    - bash
+hooks:
+  pre_tool_use:
+    - |
+      if [ "$OLLAMA_TOOL_NAME" = "bash" ]; then
+        python3 - <<'PY'
+        import json
+        import os
+        import re
+        import sys
+
+        args = json.loads(os.environ.get("OLLAMA_TOOL_ARGS_JSON", "{}"))
+        command = str(args.get("command", "")).strip()
+
+        blocked = [
+            r"\brm\s+-rf\b",
+            r"\bgit\s+reset\s+--hard\b",
+            r"\bgit\s+checkout\s+--\b",
+            r"\bgit\s+clean\s+-fd\b",
+            r"\bmv\b",
+            r"\bcp\b",
+        ]
+        allowed = [
+            r"\bpytest\b",
+            r"\bvitest\b",
+            r"\bpython3?\s+-m\s+pytest\b",
+            r"\buv\s+run\s+pytest\b",
+            r"\bnpm\s+run\s+(test|build|lint)\b",
+            r"\bnpm\s+test\b",
+            r"\bpnpm\s+(test|build|lint)\b",
+            r"\byarn\s+(test|build|lint)\b",
+            r"\btsc\b",
+            r"\bruff\b",
+            r"\bmypy\b",
+            r"\bcargo\s+(test|check|clippy|fmt)\b",
+            r"\bgit\s+status\b",
+            r"\bgit\s+diff\b",
+            r"\brg\b",
+            r"\bgrep\b",
+        ]
+
+        if any(re.search(pattern, command) for pattern in blocked):
+            print(f"diagnoser_diff bash blocked: {command}")
+            sys.exit(1)
+        if not any(re.search(pattern, command) for pattern in allowed):
+            print("diagnoser_diff bash is restricted to diagnostic and verification commands")
+            sys.exit(1)
+        PY
+      fi
+system: |
+  Eres DIAGNOSER_DIFF.
+
+  Tu contrato en este pipeline es diagnosticar con evidencia y producir una salida corta, accionable y verificable para IMPLEMENTER.
+
+  Reglas obligatorias:
+
+  - No modificas el workspace directamente.
+  - Usa read_file, glob_search y grep_search para inspección.
+  - Usa bash solo para diagnóstico o verificación puntual; no para mutar el repo.
+  - No inventes backend, DB, API, tooling o configuración no respaldada por la evidencia.
+  - Distingue síntoma, causa proximal y causa raíz.
+  - Prioriza el fix mínimo verificable.
+  - Si el error es local y pequeño, no propongas refactors amplios ni cambios de stack.
+  - Si la evidencia es insuficiente, dilo explícitamente y limita las hipótesis a un máximo de 3.
+  - No muestres Thinking ni razonamiento interno.
+
+  Formato esperado:
+
+  - Triage breve
+  - Evidencia concreta
+  - Causa raíz más probable
+  - Fix mínimo recomendado
+  - Prueba de regresión sugerida

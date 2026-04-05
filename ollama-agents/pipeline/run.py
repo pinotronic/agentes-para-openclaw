@@ -29,19 +29,23 @@ from mission_control import MissionControl
 
 def _changed_paths(project: Path) -> list[str]:
     # Includes staged+unstaged paths after applying diffs.
-    p = sh(["git", "status", "--porcelain"], cwd=project)
+    return [path for _status, path in _changed_entries(project)]
+
+
+def _changed_entries(project: Path) -> list[tuple[str, str]]:
+    p = sh(["git", "status", "--porcelain", "--ignore-submodules=all"], cwd=project)
     if p.returncode != 0:
         return []
-    paths: list[str] = []
+    entries: list[tuple[str, str]] = []
     for line in p.stdout.splitlines():
         if not line.strip():
             continue
-        # Porcelain format: XY <path>
+        status = line[:2]
         path = line[3:]
         if path.startswith('"') and path.endswith('"'):
             path = path[1:-1]
-        paths.append(path)
-    return paths
+        entries.append((status, path))
+    return entries
 
 
 def _contains_nested_segment(path: str) -> bool:
@@ -53,6 +57,87 @@ def _contains_nested_segment(path: str) -> bool:
             return True
         seen.add(normalized)
     return False
+
+
+PIPELINE_AGENT_IDS = {
+    "implementer": "implementer_diff",
+    "test_writer": "test_writer_diff",
+    "diagnoser": "diagnoser_diff",
+}
+
+
+def resolve_pipeline_agent_id(agent_id: str) -> str:
+    return PIPELINE_AGENT_IDS.get(agent_id, agent_id)
+
+
+def _is_new_git_status(status: str) -> bool:
+    compact = status.replace(" ", "")
+    return compact == "A" or status == "??"
+
+
+def _is_orphan_reference_exempt(path: str) -> bool:
+    lower = path.lower()
+    name = Path(path).name.lower()
+    suffix = Path(path).suffix.lower()
+    exempt_suffixes = {
+        ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+        ".lock", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".css",
+        ".scss", ".sass", ".less", ".html",
+    }
+    exempt_names = {
+        "__init__.py", "index.ts", "index.tsx", "index.js", "index.jsx",
+        "main.py", "main.ts", "main.js",
+    }
+    exempt_markers = {"tests", "test", "docs", "eval", "assets", "fixtures", "migrations", "scripts"}
+    if suffix in exempt_suffixes or name in exempt_names:
+        return True
+    if any(part.lower() in exempt_markers for part in Path(path).parts):
+        return True
+    if name.startswith("test_") or ".test." in lower or ".spec." in lower:
+        return True
+    return False
+
+
+def _orphan_reference_tokens(path: str) -> list[str]:
+    path_obj = Path(path)
+    return [path.replace("\\", "/"), path_obj.name, path_obj.stem]
+
+
+def _file_mentions_any_token(file_path: Path, tokens: list[str]) -> bool:
+    try:
+        content = file_path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    return any(token and token in content for token in tokens)
+
+
+def find_orphan_new_source_files(project: Path) -> list[str]:
+    entries = _changed_entries(project)
+    changed_paths = [path for _status, path in entries]
+    orphaned: list[str] = []
+    source_suffixes = {".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".java"}
+
+    for status, path in entries:
+        if not _is_new_git_status(status):
+            continue
+        if _is_orphan_reference_exempt(path):
+            continue
+        if Path(path).suffix.lower() not in source_suffixes:
+            continue
+
+        tokens = _orphan_reference_tokens(path)
+        referenced = False
+        for other_path in changed_paths:
+            if other_path == path:
+                continue
+            candidate = project / other_path
+            if candidate.is_file() and _file_mentions_any_token(candidate, tokens):
+                referenced = True
+                break
+        if not referenced:
+            orphaned.append(path)
+
+    return orphaned
 
 
 def _current_diff(project: Path) -> str:
@@ -154,7 +239,8 @@ def run_redblue_autofix_stage(
         f"CURRENT DIFF UNDER REVIEW:\n{redblue_review.get('diff', '')}\n\n"
         f"BLOCKER FINDINGS:\n{blockers}\n"
     )
-    impl_diff = run_agent("implementer", impl_task, context=context, workspace=project, rag=rag, rag_k=rag_k)
+    implementer_agent = resolve_pipeline_agent_id("implementer")
+    impl_diff = run_agent(implementer_agent, impl_task, context=context, workspace=project, rag=rag, rag_k=rag_k)
     ok, message = git_apply(project, impl_diff)
     if not ok:
         raise SystemExit(f"Failed to apply red/blue autofix diff: {message}")
@@ -168,7 +254,7 @@ def run_redblue_autofix_stage(
             f"{why}. Reverted changes; adjust prompts/adapter rules."
         )
 
-    stop_ollama_model(get_agent_model("implementer", workspace=project))
+    stop_ollama_model(get_agent_model(implementer_agent, workspace=project))
     return {"blockers": blockers, "diff": impl_diff}
 
 
@@ -205,6 +291,10 @@ def validate_project_changes(project: Path, *, adapter_id: str) -> tuple[bool, s
             return False, f"Disallowed backup or temp file: {p}"
         if _contains_nested_segment(p):
             return False, f"Suspicious duplicated path segment: {p}"
+
+    orphaned = find_orphan_new_source_files(project)
+    if orphaned:
+        return False, f"Potential orphan new source files: {', '.join(orphaned)}"
 
     # Hard rules for this monorepo (extend as needed)
     if adapter_id == "fastapi-react-monorepo":
@@ -624,10 +714,11 @@ def main() -> int:
 
         # 2) Write tests (diff)
         log.info("Running test writer...")
+        test_writer_agent = resolve_pipeline_agent_id("test_writer")
         mc.event("agent_start", {"agent": "test_writer"})
         print("\n== Test writer (diff) ==")
         test_task = build_test_writer_task(task=args.task, plan=plan)
-        test_diff = run_agent("test_writer", test_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
+        test_diff = run_agent(test_writer_agent, test_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         ok, msg = git_apply(project, test_diff)
         if not ok:
             raise SystemExit(f"Failed to apply test diff: {msg}")
@@ -642,7 +733,7 @@ def main() -> int:
                 f"{why}. Reverted changes; adjust prompts/adapter rules."
             )
 
-        stop_ollama_model(get_agent_model("test_writer", workspace=project))
+        stop_ollama_model(get_agent_model(test_writer_agent, workspace=project))
         mc.event("agent_stop", {"agent": "test_writer"})
 
         # Save initial state
@@ -669,15 +760,17 @@ def main() -> int:
 
         # 3) Diagnose
         diag_task = build_diagnoser_task(logs=logs, changed_paths=_changed_paths(project))
+        diagnoser_agent = resolve_pipeline_agent_id("diagnoser")
         mc.event("agent_start", {"agent": "diagnoser", "iteration": i})
-        diag = run_agent("diagnoser", diag_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
+        diag = run_agent(diagnoser_agent, diag_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         print("\n== Diagnoser ==")
         print(diag)
-        stop_ollama_model(get_agent_model("diagnoser", workspace=project))
+        stop_ollama_model(get_agent_model(diagnoser_agent, workspace=project))
         mc.event("agent_stop", {"agent": "diagnoser", "iteration": i})
 
         # 4) Implement fix (diff)
         log.info("Running implementer...")
+        implementer_agent = resolve_pipeline_agent_id("implementer")
         mc.event("agent_start", {"agent": "implementer", "iteration": i})
         impl_task = build_implementer_task(
             task=args.task,
@@ -686,7 +779,7 @@ def main() -> int:
             logs=logs,
             changed_paths=_changed_paths(project),
         )
-        impl_diff = run_agent("implementer", impl_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
+        impl_diff = run_agent(implementer_agent, impl_task, context=context, workspace=project, rag=rag, rag_k=args.rag_k, mission_control=mc, permission_mode=args.permission_mode)
         ok2, msg2 = git_apply(project, impl_diff)
         if not ok2:
             raise SystemExit(f"Failed to apply implementer diff: {msg2}")
@@ -700,7 +793,7 @@ def main() -> int:
                 f"{why2}. Reverted changes; adjust prompts/adapter rules."
             )
 
-        stop_ollama_model(get_agent_model("implementer", workspace=project))
+        stop_ollama_model(get_agent_model(implementer_agent, workspace=project))
         mc.event("agent_stop", {"agent": "implementer", "iteration": i})
 
         # Save state after implementation
